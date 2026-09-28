@@ -254,6 +254,10 @@ func (chain *TestBlockchain) Bus() eventbus.Bus {
 	return chain.bus
 }
 
+func (chain *TestBlockchain) Ipfs() ipfs.Proxy {
+	return chain.ipfs
+}
+
 func GetDefaultConsensusConfig() *config.ConsensusConf {
 	base := config.GetDefaultConsensusConfig()
 	res := *base
