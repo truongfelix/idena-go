@@ -1669,7 +1669,7 @@ func (s *StateDB) SetPredefinedGlobal(state *models.ProtoPredefinedState) {
 func (s *StateDB) SetPredefinedStatusSwitch(state *models.ProtoPredefinedState) {
 	stateObject := s.GetOrNewStatusSwitchObject()
 	for _, item := range state.StatusSwitch.Addresses {
-		stateObject.data.Addresses = append(stateObject.data.Addresses, common.BytesToAddress(item))
+		stateObject.add(common.BytesToAddress(item))
 	}
 	stateObject.touch()
 }
