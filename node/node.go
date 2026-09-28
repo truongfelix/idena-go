@@ -31,6 +31,7 @@ import (
 	"github.com/idena-network/idena-go/subscriptions"
 	"github.com/idena-network/idena-go/vm"
 	"github.com/pkg/errors"
+	"github.com/syndtr/goleveldb/leveldb"
 	"github.com/syndtr/goleveldb/leveldb/filter"
 	"github.com/syndtr/goleveldb/leveldb/opt"
 	"github.com/tendermint/tm-db"
@@ -432,13 +433,52 @@ func OpenDatabase(datadir string, name string, cache int, handles int, compact b
 	if err != nil {
 		return nil, err
 	}
-	if compact {
+	if compact && needsFullCompaction(res.DB()) {
 		if err := compactDb(res); err != nil {
 			res.Close()
 			return nil, err
 		}
 	}
 	return res, nil
+}
+
+// minShareAboveDeepestLevel is the share of the stored data above the deepest non-empty level
+// from which OpenDatabase runs a full compaction. A full compaction rewrites the whole database
+// but frees about as much as the data above the deepest level (the data written since that
+// level was last compacted), so below this share it costs minutes and frees little.
+const minShareAboveDeepestLevel = 0.1
+
+// needsFullCompaction reports whether enough data sits above the deepest level for a full
+// compaction to be worth it. It returns true if the statistics cannot be read.
+func needsFullCompaction(goLevelDB *leveldb.DB) bool {
+	var stats leveldb.DBStats
+	if err := goLevelDB.Stats(&stats); err != nil {
+		return true
+	}
+	share := shareAboveDeepestLevel(stats.LevelSizes)
+	if share < minShareAboveDeepestLevel {
+		log.Info("Skip DB compaction", "aboveDeepestLevel", fmt.Sprintf("%.1f%%", share*100))
+		return false
+	}
+	return true
+}
+
+// shareAboveDeepestLevel returns the share of the data stored above the deepest non-empty level.
+func shareAboveDeepestLevel(levelSizes leveldb.Sizes) float64 {
+	deepest := -1
+	for level, size := range levelSizes {
+		if size > 0 {
+			deepest = level
+		}
+	}
+	if deepest < 0 {
+		return 0
+	}
+	var above int64
+	for _, size := range levelSizes[:deepest] {
+		above += size
+	}
+	return float64(above) / float64(above+levelSizes[deepest])
 }
 
 func compactDb(goLevelDB *db.GoLevelDB) error {
