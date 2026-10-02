@@ -130,7 +130,7 @@ func StartMobileNode(path string, cfg string) string {
 	}
 	log.Root().SetHandler(log.LvlFilterHandler(log.LvlInfo, log.MultiHandler(log.StreamHandler(os.Stdout, log.LogfmtFormat()), fileHandler)))
 
-	c, err := config.MakeMobileConfig(path, cfg)
+	c, err := makeMobileConfig(path, cfg)
 
 	if err != nil {
 		return err.Error()
@@ -147,6 +147,19 @@ func StartMobileNode(path string, cfg string) string {
 	}
 
 	return "started"
+}
+
+// makeMobileConfig builds the configuration of a node started by StartMobileNode: the mobile defaults with cfg
+// applied over them, at the consensus version its chain database has reached.
+func makeMobileConfig(path string, cfg string) (*config.Config, error) {
+	c, err := config.MakeMobileConfig(path, cfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := ApplyStoredConsensusVersion(c); err != nil {
+		return nil, err
+	}
+	return c, nil
 }
 
 func ProvideMobileKey(path string, cfg string, key string, password string) string {
