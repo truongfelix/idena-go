@@ -16,9 +16,9 @@ import (
 )
 
 const (
-	wantReleaseID             = "idena-mainnet-legacy-compat-2026.10.01-rc23"
-	wantNodeCommit            = "1aafe80754fdfe3cdc67b588c08681801cc45172"
-	wantRuntimeCommit         = "1aafe80754fdfe3cdc67b588c08681801cc45172"
+	wantReleaseID             = "idena-mainnet-legacy-compat-2026.10.02-rc24"
+	wantNodeCommit            = "9e6c0033456081988257ba19a3db2cb4d264805c"
+	wantRuntimeCommit         = "9e6c0033456081988257ba19a3db2cb4d264805c"
 	wantBindingCommit         = "01ccca5cc3c94917725964541954a9f20e3412e9"
 	wantGossipProtocol        = "/idena/gossip/1.1.0"
 	wantMainnetNetwork uint32 = 1
