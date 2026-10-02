@@ -38,10 +38,10 @@ require (
 	golang.org/x/sys v0.47.0
 	google.golang.org/protobuf v1.36.11
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c
-	gopkg.in/natefinch/npipe.v2 v2.0.0-20160621034901-c1b8fa8bdcce
 )
 
 require (
+	github.com/Microsoft/go-winio v0.6.2
 	github.com/idena-network/idena-wasm-binding v0.0.0-20260703133323-47b198d9b194
 	github.com/ipfs/boxo v0.41.0
 	github.com/libp2p/go-libp2p v0.48.0
