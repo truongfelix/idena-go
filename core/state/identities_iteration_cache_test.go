@@ -1,6 +1,7 @@
 package state
 
 import (
+	"math/big"
 	"testing"
 
 	"github.com/idena-network/idena-go/common"
@@ -149,4 +150,40 @@ func TestIdentitiesIterationCacheFollowsUnsavedTreeWrites(t *testing.T) {
 	require.Equal(t, expectedKeys, keys)
 	require.Equal(t, expectedValues, values)
 	require.Equal(t, uint16(555), s.GetIdentity(addrs[5]).Birthday)
+}
+
+// Without identities the kept walk is empty: replaying it must report no identity, and the first
+// identity written to the tree must show up.
+func TestIdentitiesIterationCacheWithoutIdentities(t *testing.T) {
+	s, _ := newStateWithIdentities(t, 0)
+	s.EnableIdentitiesIterationCache()
+	defer s.DisableIdentitiesIterationCache()
+
+	requireNoIdentities := func() {
+		for i := 0; i < 2; i++ {
+			stopped := s.IterateIdentities(func(key []byte, value []byte) bool {
+				t.Fatalf("unexpected identity key %x", key)
+				return true
+			})
+			require.False(t, stopped)
+			require.NotNil(t, s.identitiesIteration, "an empty walk is kept too")
+			s.IterateOverIdentities(func(addr common.Address, identity Identity) {
+				t.Fatalf("unexpected identity %v", addr.Hex())
+			})
+		}
+	}
+	// An empty tree, then a tree with an account but no identity.
+	requireNoIdentities()
+	s.SetBalance(common.Address{0x1}, big.NewInt(1))
+	s.Commit(false)
+	s.Clear()
+	requireNoIdentities()
+
+	key, _ := crypto.GenerateKey()
+	addr := crypto.PubkeyToAddress(key.PublicKey)
+	s.SetState(addr, Newbie)
+	s.Commit(false)
+	s.Clear()
+	keys, _ := collectIdentities(s)
+	require.Equal(t, [][]byte{StateDbKeys.IdentityKey(addr)}, keys)
 }

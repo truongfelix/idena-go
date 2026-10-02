@@ -86,6 +86,47 @@ func TestRecoverSendersConcurrentWithSender(t *testing.T) {
 	wg.Wait()
 }
 
+// requireSendersNotCached checks that no transaction has a cached sender: once its signature is
+// replaced, its sender cannot be recovered.
+func requireSendersNotCached(t *testing.T, txs []*types.Transaction) {
+	for i, tx := range txs {
+		tx.Signature = []byte{1, 2, 3}
+		_, err := types.Sender(tx)
+		require.Error(t, err, "tx %d", i)
+	}
+}
+
+// Below recoverSendersMinTxs, down to no transactions at all, recoverSenders recovers nothing and
+// leaves it to sequential validation.
+func TestRecoverSendersSkipsSmallBatches(t *testing.T) {
+	recoverSenders(nil)
+	recoverSenders([]*types.Transaction{})
+	for _, n := range []int{1, recoverSendersMinTxs - 1} {
+		txs := sendersTestTxs(t, n)
+		recoverSenders(txs)
+		requireSendersNotCached(t, txs)
+	}
+	// The last batch of a block can be small too.
+	txs := sendersTestTxs(t, recoverSendersBatchSize+recoverSendersMinTxs-1)
+	recoverSenders(txs[recoverSendersBatchSize:])
+	requireSendersNotCached(t, txs)
+}
+
+func TestProcessTxsWithoutTransactions(t *testing.T) {
+	chain, appState, _, _ := NewTestBlockchain(true, nil)
+	defer chain.SecStore().Destroy()
+
+	for _, txs := range [][]*types.Transaction{nil, {}} {
+		totalFee, totalTips, receipts, tasks, usedGas, err := chain.processTxs(txs, &txsExecutionContext{appState: appState, header: chain.Head}, false)
+		require.NoError(t, err)
+		require.Zero(t, totalFee.Sign())
+		require.Zero(t, totalTips.Sign())
+		require.Empty(t, receipts)
+		require.Empty(t, tasks)
+		require.Zero(t, usedGas)
+	}
+}
+
 func TestRecoverSendersDoesNotWarmBeyondBatch(t *testing.T) {
 	txs := sendersTestTxs(t, recoverSendersBatchSize+1)
 	txs[recoverSendersBatchSize] = decodedTx(t, txs[0])

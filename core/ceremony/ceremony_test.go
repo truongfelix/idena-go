@@ -452,6 +452,34 @@ func Test_getNotApprovedFlips(t *testing.T) {
 	r.True(result.Contains(2))
 }
 
+// The cid index is built before the candidates are checked, so it is also built when no flip is
+// reported: every candidate approved, or a shard without candidates or flips.
+func Test_getNotApprovedFlips_NothingToReport(t *testing.T) {
+	chain, app, _, _ := blockchain.NewTestBlockchain(false, make(map[common.Address]config.GenesisAllocation))
+	defer chain.SecStore().Destroy()
+	var candidates []*candidate
+	flips := [][]byte{{0}, {1}, {2}}
+	flipsPerAuthor := make(map[int][][]byte)
+	approvedCandidates := mapset.NewSet()
+	for i := range flips {
+		key, _ := crypto.GenerateKey()
+		addr := crypto.PubkeyToAddress(key.PublicKey)
+		candidates = append(candidates, &candidate{Address: addr})
+		flipsPerAuthor[i] = [][]byte{flips[i]}
+		app.State.SetRequiredFlips(addr, 1)
+		approvedCandidates.Add(addr)
+	}
+	vc := ValidationCeremony{appState: app}
+	vc.shardCandidates = map[common.ShardId]*candidatesOfShard{
+		0: {candidates: candidates, flipsPerAuthor: flipsPerAuthor, flips: flips},
+		1: {flipsPerAuthor: make(map[int][][]byte)},
+	}
+
+	r := require.New(t)
+	r.Zero(vc.getNotApprovedFlips(approvedCandidates, 0).Cardinality(), "all candidates approved")
+	r.Zero(vc.getNotApprovedFlips(mapset.NewSet(), 1).Cardinality(), "no candidates")
+}
+
 // resolveFlipPos mirrors how getNotApprovedFlips uses the index map: present
 // cids return their first index, absent cids resolve to -1 (as the old flipPos
 // linear scan did).
