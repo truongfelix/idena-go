@@ -136,8 +136,10 @@ func (d *DefaultPushTracker) loop() {
 			d.ppMutex.Unlock()
 		}
 
-		d.requests <- obj.req
+		// Register before sending: a push added once the request is received must
+		// get this pull's time, not the previous one.
 		d.RegisterPull(obj.req.Hash)
+		d.requests <- obj.req
 	}
 }
 
