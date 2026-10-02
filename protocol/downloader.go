@@ -69,6 +69,8 @@ type Downloader struct {
 	keyStore             *keystore.KeyStore
 	subManager           *subscriptions.Manager
 	upgrader             *upgrade.Upgrader
+	// failedSnapshots holds the heights of the snapshots that the fast sync of the kept headers gave up on.
+	failedSnapshots map[uint64]struct{}
 }
 
 func (d *Downloader) IsSyncing() bool {
@@ -169,6 +171,10 @@ func (d *Downloader) Load() {
 	head := d.chain.Head
 
 	applier, toHeight := d.createBlockApplier()
+	if applier == nil {
+		time.Sleep(waitForSnapshotDelay)
+		return
+	}
 
 	var from uint64
 	var err error
@@ -210,6 +216,7 @@ loop:
 	<-term
 	if err := applier.postConsuming(); err != nil {
 		d.log.Error("Post consuming error", "err", err)
+		d.recordFailedSnapshot(applier)
 		time.Sleep(5 * time.Second)
 	}
 }
@@ -279,29 +286,96 @@ func (d *Downloader) ClearPotentialForks() {
 	d.potentialForkedPeers.Clear()
 }
 
+// syncPlan is how one pass of the downloader brings the chain towards the top.
+type syncPlan int
+
+const (
+	planFullSync syncPlan = iota
+	planFastSync
+	// planWaitForSnapshot: a fast sync has downloaded headers well above the chain, but no snapshot
+	// can complete it now.
+	planWaitForSnapshot
+)
+
+// waitForSnapshotDelay is the pause before the downloader looks for a snapshot again.
+var waitForSnapshotDelay = time.Minute
+
+// maxFailedSnapshots is how many snapshots the fast sync of the kept headers may give up on before the
+// downloader drops the headers and uses full sync.
+const maxFailedSnapshots = 3
+
 func (d *Downloader) createBlockApplier() (loader blockApplier, toHeight uint64) {
-
-	canUseFastSync := d.cfg.Sync.FastSync
-
-	if d.top-d.chain.Head.Height() < d.cfg.Sync.ForceFullSync {
-		canUseFastSync = false
-	}
+	head := d.chain.Head.Height()
 	var manifest *snapshot.Manifest
-	if canUseFastSync {
+	if d.cfg.Sync.FastSync && d.top-head >= d.cfg.Sync.ForceFullSync {
 		manifest = d.getBestManifest()
-		if manifest == nil || d.chain.Head.Height() > manifest.Height || manifest.Height-d.chain.Head.Height() < d.cfg.Sync.ForceFullSync {
-			canUseFastSync = false
-		}
 	}
 
-	if canUseFastSync {
+	failedSnapshots := d.failedSnapshotCount()
+	switch chooseSyncPlan(d.cfg.Sync, head, d.top, d.chain.PreliminaryHead, manifest, failedSnapshots) {
+	case planFastSync:
 		d.log.Info("Fast sync will be used")
 		return NewFastSync(d.pm, d.log, d.chain, d.ipfs, d.appState, d.potentialForkedPeers, manifest, d.sm, d.bus, d.secStore.GetAddress(), d.keyStore, d.subManager, d.upgrader), manifest.Height
-	} else {
+	case planWaitForSnapshot:
+		d.log.Info("No snapshot can complete the fast sync: keeping its headers and waiting for a newer snapshot",
+			"head", head, "headers", d.chain.PreliminaryHead.Height(), "failedSnapshots", failedSnapshots, "max", maxFailedSnapshots)
+		return nil, 0
+	default:
+		if failedSnapshots >= maxFailedSnapshots {
+			d.log.Warn("The fast sync gave up on too many snapshots: dropping its headers", "failedSnapshots", failedSnapshots)
+		}
 		d.log.Info("Full sync will be used")
 		top := d.top
 		return NewFullSync(d.pm, d.log, d.chain, d.ipfs, d.appState, d.potentialForkedPeers, top, d.statsCollector), top
 	}
+}
+
+// chooseSyncPlan picks fast sync when a snapshot lies far enough above the chain, and full sync
+// otherwise, except while a fast sync is under way (its headers are ForceFullSync blocks or more above
+// the chain) and no snapshot is usable, for example because its download timed out: full sync would
+// drop those headers at its first block (AddBlock removes the preliminary head) and then apply every
+// block from far behind. The downloader waits for the next snapshot instead, one per SnapshotRange
+// blocks, and the fast sync then goes on from its headers. After maxFailedSnapshots failed snapshots it
+// gives the headers up and uses full sync, so that a node whose snapshots keep failing still syncs.
+//
+// A snapshot below the kept headers is not usable: the fast sync goes on from its headers, above the
+// snapshot, and gives up without counting a timeout for it.
+func chooseSyncPlan(cfg *config.SyncConfig, head, top uint64, preliminaryHead *types.Header, manifest *snapshot.Manifest, failedSnapshots int) syncPlan {
+	if !cfg.FastSync || top-head < cfg.ForceFullSync {
+		return planFullSync
+	}
+	if manifest != nil && manifest.Height >= head && manifest.Height-head >= cfg.ForceFullSync &&
+		(preliminaryHead == nil || manifest.Height >= preliminaryHead.Height()) {
+		return planFastSync
+	}
+	if preliminaryHead != nil && preliminaryHead.Height() >= head+cfg.ForceFullSync && failedSnapshots < maxFailedSnapshots {
+		return planWaitForSnapshot
+	}
+	return planFullSync
+}
+
+// failedSnapshotCount is how many snapshots the fast sync of the kept headers gave up on. The count
+// starts again when no headers are kept: the fast sync completed, or a full sync dropped them.
+func (d *Downloader) failedSnapshotCount() int {
+	if d.chain.PreliminaryHead == nil {
+		d.failedSnapshots = nil
+	}
+	return len(d.failedSnapshots)
+}
+
+// recordFailedSnapshot counts the snapshot of a fast sync that gave up on it: its manifest is now
+// invalid (MaxManifestTimeouts download timeouts, or a snapshot that cannot be loaded). A snapshot
+// counts once, whatever the number of its manifests: nodes of different versions can announce different
+// CIDs for the same height.
+func (d *Downloader) recordFailedSnapshot(applier blockApplier) {
+	fs, ok := applier.(*fastSync)
+	if !ok || !d.sm.IsInvalidManifest(fs.manifest.CidV2) {
+		return
+	}
+	if d.failedSnapshots == nil {
+		d.failedSnapshots = map[uint64]struct{}{}
+	}
+	d.failedSnapshots[fs.manifest.Height] = struct{}{}
 }
 
 func (d *Downloader) getBestManifest() *snapshot.Manifest {
