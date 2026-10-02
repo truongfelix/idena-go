@@ -6,7 +6,7 @@ This is experimental research software. I cannot guarantee its security, correct
 
 Go implementation of the Idena network node.
 
-[![Build Idena](https://github.com/ubiubi18/idena-go/actions/workflows/main.yml/badge.svg?branch=master)](https://github.com/ubiubi18/idena-go/actions/workflows/main.yml)
+[![Build Idena](https://github.com/truongfelix/idena-go/actions/workflows/main.yml/badge.svg?branch=master)](https://github.com/truongfelix/idena-go/actions/workflows/main.yml)
 
 > This is a community-maintained compatibility and security fork. It has no
 > published binary releases. Build from a reviewed commit and verify the

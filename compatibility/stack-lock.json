@@ -26,19 +26,19 @@
     {
       "name": "idena-wasm-binding",
       "role": "native-binding",
-      "repository": "https://github.com/ubiubi18/idena-wasm-binding.git",
+      "repository": "https://github.com/truongfelix/idena-wasm-binding.git",
       "commit": "01ccca5cc3c94917725964541954a9f20e3412e9"
     },
     {
       "name": "idena-wasm",
       "role": "contract-runtime",
-      "repository": "https://github.com/ubiubi18/idena-wasm.git",
+      "repository": "https://github.com/truongfelix/idena-wasm.git",
       "commit": "b686ed84d26b43dfa74ea12a0d3af1b120a50598"
     },
     {
       "name": "wasmer",
       "role": "wasm-engine",
-      "repository": "https://github.com/ubiubi18/wasmer.git",
+      "repository": "https://github.com/truongfelix/wasmer.git",
       "commit": "45f9bccf49187be24874400067923abda4c037da"
     },
     {
