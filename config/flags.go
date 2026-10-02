@@ -128,6 +128,10 @@ var (
 		Name:  "forcefullsync",
 		Usage: "Force full sync on last blocks",
 	}
+	DbWriteBufferFlag = cli.IntFlag{
+		Name:  "dbwritebuffer",
+		Usage: "Chain database write buffer in MiB (default 4); a bigger buffer writes much less to disk and costs about 2-4 times the added buffer in RAM",
+	}
 	ProfileFlag = cli.StringFlag{
 		Name:  "profile",
 		Usage: "Configuration profile",

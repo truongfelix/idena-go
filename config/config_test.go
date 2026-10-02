@@ -306,10 +306,48 @@ func newTestContext(t *testing.T) *cli.Context {
 		DataDirFlag,
 		IpfsRoutingFlag,
 		ProfileFlag,
+		DbWriteBufferFlag,
 	}
 	flagSet := flag.NewFlagSet("test", flag.ContinueOnError)
 	for _, f := range app.Flags {
 		f.Apply(flagSet)
 	}
 	return cli.NewContext(app, flagSet, nil)
+}
+
+func TestDatabaseWriteBufferDefaultsToZero(t *testing.T) {
+	cfg := getDefaultConfig(DefaultDataDir)
+	require.Zero(t, cfg.DatabaseWriteBufferMiB())
+	require.Zero(t, (&Config{}).DatabaseWriteBufferMiB())
+}
+
+func TestApplyDatabaseFlagsSetsWriteBuffer(t *testing.T) {
+	cfg := getDefaultConfig(DefaultDataDir)
+	ctx := newTestContext(t)
+
+	require.NoError(t, ctx.Set(DbWriteBufferFlag.Name, "16"))
+	applyDatabaseFlags(ctx, cfg)
+
+	require.Equal(t, 16, cfg.DatabaseWriteBufferMiB())
+}
+
+func TestMakeMobileConfigReadsDatabaseWriteBuffer(t *testing.T) {
+	cfg, err := MakeMobileConfig(t.TempDir(), `{"Database":{"WriteBufferMiB":32}}`)
+	require.NoError(t, err)
+	require.Equal(t, 32, cfg.DatabaseWriteBufferMiB())
+
+	cfg, err = MakeMobileConfig(t.TempDir(), `{"IpfsConf":{"Profile":""}}`)
+	require.NoError(t, err)
+	require.Zero(t, cfg.DatabaseWriteBufferMiB())
+}
+
+func TestMakeConfigRejectsInvalidDatabaseWriteBuffer(t *testing.T) {
+	for _, value := range []string{"-1", "257"} {
+		ctx := newTestContext(t)
+		require.NoError(t, ctx.Set(DbWriteBufferFlag.Name, value))
+
+		_, err := MakeConfig(ctx, func(cfg *Config) {})
+
+		require.ErrorContains(t, err, "invalid Database.WriteBufferMiB")
+	}
 }
