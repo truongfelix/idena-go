@@ -30,6 +30,7 @@ import (
 	dbm "github.com/tendermint/tm-db"
 	"io"
 	"math/big"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -1740,7 +1741,7 @@ func (s *StateDB) SetPredefinedGlobal(state *models.ProtoPredefinedState) {
 func (s *StateDB) SetPredefinedStatusSwitch(state *models.ProtoPredefinedState) {
 	stateObject := s.GetOrNewStatusSwitchObject()
 	for _, item := range state.StatusSwitch.Addresses {
-		stateObject.data.Addresses = append(stateObject.data.Addresses, common.BytesToAddress(item))
+		stateObject.add(common.BytesToAddress(item))
 	}
 	stateObject.touch()
 }
@@ -1831,6 +1832,10 @@ func (s *StateDB) HasStatusSwitchAddresses(addr common.Address) bool {
 func (s *StateDB) StatusSwitchAddresses() []common.Address {
 	statusSwitch := s.GetOrNewStatusSwitchObject()
 	return statusSwitch.Addresses()
+}
+
+func (s *StateDB) StatusSwitchAddressesCount() int {
+	return len(s.GetOrNewStatusSwitchObject().data.Addresses)
 }
 
 func (s *StateDB) ClearStatusSwitchAddresses() {
@@ -2001,7 +2006,11 @@ func (s *StateDB) SetContractStake(addr common.Address, stake *big.Int) {
 }
 
 func (s *StateDB) Delegations() []*Delegation {
-	return s.GetOrNewDelegationSwitchObject().data.Delegations
+	return s.GetOrNewDelegationSwitchObject().Delegations()
+}
+
+func (s *StateDB) DelegationsCount() int {
+	return len(s.GetOrNewDelegationSwitchObject().data.Delegations)
 }
 
 func (s *StateDB) SetDelegatee(addr common.Address, delegatee common.Address) {
@@ -2081,7 +2090,11 @@ func (s *StateDB) AddDelayedPenalty(addr common.Address) {
 }
 
 func (s *StateDB) DelayedOfflinePenalties() []common.Address {
-	return s.GetOrNewDelayedOfflinePenaltyObject().data.Identities
+	return slices.Clone(s.GetOrNewDelayedOfflinePenaltyObject().data.Identities)
+}
+
+func (s *StateDB) DelayedOfflinePenaltiesCount() int {
+	return len(s.GetOrNewDelayedOfflinePenaltyObject().data.Identities)
 }
 
 func (s *StateDB) ClearDelayedOfflinePenalties() {

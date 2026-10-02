@@ -2178,9 +2178,9 @@ func (chain *Blockchain) calculateFlags(appState *appstate.AppState, block *type
 		flags |= types.Snapshot
 	}
 
-	if (flags.HasFlag(types.Snapshot) || block.Height()%chain.config.Consensus.StatusSwitchRange == 0) && (len(appState.State.StatusSwitchAddresses()) > 0 ||
-		len(appState.State.DelayedOfflinePenalties()) > 0) ||
-		block.Height()%chain.config.Consensus.DelegationSwitchRange == 0 && len(appState.State.Delegations()) > 0 ||
+	if (flags.HasFlag(types.Snapshot) || block.Height()%chain.config.Consensus.StatusSwitchRange == 0) && (appState.State.StatusSwitchAddressesCount() > 0 ||
+		appState.State.DelayedOfflinePenaltiesCount() > 0) ||
+		block.Height()%chain.config.Consensus.DelegationSwitchRange == 0 && appState.State.DelegationsCount() > 0 ||
 		block.Height()%chain.config.Consensus.DiscriminationSwitchRange == 0 && len(appState.State.DiscriminationStatusSwitchAddresses()) > 0 {
 		flags |= types.IdentityUpdate
 	}

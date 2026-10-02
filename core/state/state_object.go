@@ -9,6 +9,7 @@ import (
 	models "github.com/idena-network/idena-go/protobuf"
 	math2 "math"
 	"math/big"
+	"slices"
 	"sort"
 )
 
@@ -109,6 +110,9 @@ type stateGlobal struct {
 
 type stateStatusSwitch struct {
 	data IdentityStatusSwitch
+	// counts is kept in step with data.Addresses: change the list only through the methods,
+	// and hand out copies of it.
+	counts addressCounts
 
 	deleted bool
 	onDirty func()
@@ -116,13 +120,19 @@ type stateStatusSwitch struct {
 
 type stateDelegationSwitch struct {
 	data DelegationSwitch
+	// positions maps each delegator to its first entry in data.Delegations. It is kept in step
+	// with the list: change the list only through the methods, and hand out copies of its entries.
+	positions map[common.Address]int
 
 	deleted bool
 	onDirty func()
 }
 
 type stateDelayedOfflinePenalties struct {
-	data    DelayedPenalties
+	data DelayedPenalties
+	// counts is kept in step with data.Identities: change the list only through the methods,
+	// and hand out copies of it.
+	counts  addressCounts
 	deleted bool
 	onDirty func()
 }
@@ -790,21 +800,58 @@ func newGlobalObject(data Global, onDirty func()) *stateGlobal {
 func newStatusSwitchObject(data IdentityStatusSwitch, onDirty func()) *stateStatusSwitch {
 	return &stateStatusSwitch{
 		data:    data,
+		counts:  newAddressCounts(data.Addresses),
 		onDirty: onDirty,
 	}
 }
 
 func newDelegationSwitchObject(data DelegationSwitch, onDirty func()) *stateDelegationSwitch {
+	positions := make(map[common.Address]int, len(data.Delegations))
+	for i, d := range data.Delegations {
+		if _, ok := positions[d.Delegator]; !ok {
+			positions[d.Delegator] = i
+		}
+	}
 	return &stateDelegationSwitch{
-		data:    data,
-		onDirty: onDirty,
+		data:      data,
+		positions: positions,
+		onDirty:   onDirty,
 	}
 }
 
 func newDelayedOfflinePenaltiesObject(data DelayedPenalties, onDirty func()) *stateDelayedOfflinePenalties {
 	return &stateDelayedOfflinePenalties{
 		data:    data,
+		counts:  newAddressCounts(data.Identities),
 		onDirty: onDirty,
+	}
+}
+
+// addressCounts counts the occurrences of each address of a list. Kept in step with the list,
+// it answers membership without scanning the list.
+type addressCounts map[common.Address]int
+
+func newAddressCounts(addrs []common.Address) addressCounts {
+	counts := make(addressCounts, len(addrs))
+	for _, addr := range addrs {
+		counts[addr]++
+	}
+	return counts
+}
+
+func (c addressCounts) has(addr common.Address) bool {
+	return c[addr] > 0
+}
+
+func (c addressCounts) add(addr common.Address) {
+	c[addr]++
+}
+
+func (c addressCounts) remove(addr common.Address) {
+	if c[addr] > 1 {
+		c[addr]--
+	} else {
+		delete(c, addr)
 	}
 }
 
@@ -1647,32 +1694,36 @@ func (s *stateStatusSwitch) empty() bool {
 }
 
 func (s *stateStatusSwitch) Addresses() []common.Address {
-	return s.data.Addresses
+	return slices.Clone(s.data.Addresses)
 }
 
 func (s *stateStatusSwitch) Clear() {
 	s.data.Addresses = []common.Address{}
+	s.counts = addressCounts{}
 	s.touch()
 }
 
 func (s *stateStatusSwitch) ToggleAddress(sender common.Address) {
 	defer s.touch()
-	for i := 0; i < len(s.data.Addresses); i++ {
-		if s.data.Addresses[i] == sender {
-			s.data.Addresses = append(s.data.Addresses[:i], s.data.Addresses[i+1:]...)
-			return
+	if s.counts.has(sender) {
+		for i := 0; i < len(s.data.Addresses); i++ {
+			if s.data.Addresses[i] == sender {
+				s.data.Addresses = append(s.data.Addresses[:i], s.data.Addresses[i+1:]...)
+				s.counts.remove(sender)
+				return
+			}
 		}
 	}
-	s.data.Addresses = append(s.data.Addresses, sender)
+	s.add(sender)
+}
+
+func (s *stateStatusSwitch) add(addr common.Address) {
+	s.data.Addresses = append(s.data.Addresses, addr)
+	s.counts.add(addr)
 }
 
 func (s *stateStatusSwitch) HasAddress(addr common.Address) bool {
-	for _, item := range s.data.Addresses {
-		if item == addr {
-			return true
-		}
-	}
-	return false
+	return s.counts.has(addr)
 }
 
 func (s *stateStatusSwitch) touch() {
@@ -1683,12 +1734,11 @@ func (s *stateStatusSwitch) touch() {
 
 func (s *stateDelegationSwitch) ToggleDelegation(sender common.Address, delegatee common.Address) {
 	defer s.touch()
-	for i := 0; i < len(s.data.Delegations); i++ {
-		if s.data.Delegations[i].Delegator == sender {
-			s.data.Delegations[i].Delegatee = delegatee
-			return
-		}
+	if i, ok := s.positions[sender]; ok {
+		s.data.Delegations[i].Delegatee = delegatee
+		return
 	}
+	s.positions[sender] = len(s.data.Delegations)
 	s.data.Delegations = append(s.data.Delegations, &Delegation{
 		Delegator: sender,
 		Delegatee: delegatee,
@@ -1703,16 +1753,28 @@ func (s *stateDelegationSwitch) touch() {
 
 func (s *stateDelegationSwitch) Clear() {
 	s.data.Delegations = []*Delegation{}
+	s.positions = map[common.Address]int{}
 	s.touch()
 }
 
 func (s *stateDelegationSwitch) DelegationSwitch(sender common.Address) *Delegation {
-	for _, d := range s.data.Delegations {
-		if d.Delegator == sender {
-			return d
-		}
+	if i, ok := s.positions[sender]; ok {
+		delegation := *s.data.Delegations[i]
+		return &delegation
 	}
 	return nil
+}
+
+func (s *stateDelegationSwitch) Delegations() []*Delegation {
+	if s.data.Delegations == nil {
+		return nil
+	}
+	result := make([]*Delegation, len(s.data.Delegations))
+	for i, d := range s.data.Delegations {
+		delegation := *d
+		result[i] = &delegation
+	}
+	return result
 }
 
 func (s *stateDelegationSwitch) empty() bool {
@@ -1740,28 +1802,29 @@ func (s *stateDelayedOfflinePenalties) empty() bool {
 
 func (s *stateDelayedOfflinePenalties) Clear() {
 	s.data.Identities = []common.Address{}
+	s.counts = addressCounts{}
 	s.touch()
 }
 
 func (s *stateDelayedOfflinePenalties) Add(addr common.Address) {
 	s.data.Identities = append(s.data.Identities, addr)
+	s.counts.add(addr)
 	s.touch()
 }
 
 func (s *stateDelayedOfflinePenalties) Has(addr common.Address) bool {
-	for _, item := range s.data.Identities {
-		if item == addr {
-			return true
-		}
-	}
-	return false
+	return s.counts.has(addr)
 }
 
 func (s *stateDelayedOfflinePenalties) Remove(addr common.Address) {
 	defer s.touch()
+	if !s.counts.has(addr) {
+		return
+	}
 	for i := 0; i < len(s.data.Identities); i++ {
 		if s.data.Identities[i] == addr {
 			s.data.Identities = append(s.data.Identities[:i], s.data.Identities[i+1:]...)
+			s.counts.remove(addr)
 			return
 		}
 	}

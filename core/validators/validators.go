@@ -235,18 +235,16 @@ func (v *ValidatorsCache) loadValidNodes() {
 		return false
 	})
 
-	v.sortedValidators = newSortedAddresses()
-
+	var validators []common.Address
 	for _, n := range onlineNodes {
 		if v.validatedAddresses.Contains(n) {
-			v.sortedValidators.add(n)
+			validators = append(validators, n)
 		}
 		if pool, ok := v.pools[n]; ok {
-			for _, addr := range pool.delegators {
-				v.sortedValidators.add(addr)
-			}
+			validators = append(validators, pool.delegators...)
 		}
 	}
+	v.sortedValidators = newSortedAddressesFrom(validators)
 
 	v.height = v.identityState.Version()
 }
@@ -341,19 +339,17 @@ func (v *ValidatorsCache) UpdateFromIdentityStateDiff(diff *state.IdentityStateD
 		}
 	}
 
-	v.sortedValidators = newSortedAddresses()
-
+	var validators []common.Address
 	for _, n := range v.onlineAddresses.ToSlice() {
 		addr := n.(common.Address)
 		if v.validatedAddresses.Contains(addr) {
-			v.sortedValidators.add(addr)
+			validators = append(validators, addr)
 		}
 		if pool, ok := v.pools[addr]; ok {
-			for _, delegator := range pool.delegators {
-				v.sortedValidators.add(delegator)
-			}
+			validators = append(validators, pool.delegators...)
 		}
 	}
+	v.sortedValidators = newSortedAddressesFrom(validators)
 }
 
 func (v *ValidatorsCache) Clone() *ValidatorsCache {
@@ -468,23 +464,22 @@ type sortedAddresses struct {
 	list []common.Address
 }
 
-func newSortedAddresses() *sortedAddresses {
-	return &sortedAddresses{
-		list: []common.Address{},
-	}
-}
-
-func (s *sortedAddresses) add(addr common.Address) {
-	i := sort.Search(len(s.list), func(i int) bool {
-		return bytes.Compare(s.list[i].Bytes(), addr.Bytes()) <= 0
+// newSortedAddressesFrom sorts addrs in descending byte order and drops duplicates, reusing
+// the slice. Sorting once replaces an insertion per address, which cost O(n²) per rebuild.
+func newSortedAddressesFrom(addrs []common.Address) *sortedAddresses {
+	sort.Slice(addrs, func(i, j int) bool {
+		return bytes.Compare(addrs[i][:], addrs[j][:]) > 0
 	})
-	if i < len(s.list) && bytes.Compare(s.list[i].Bytes(), addr.Bytes()) == 0 {
-		return
+	list := []common.Address{}
+	if len(addrs) > 0 {
+		list = addrs[:1]
+		for _, addr := range addrs[1:] {
+			if addr != list[len(list)-1] {
+				list = append(list, addr)
+			}
+		}
 	}
-
-	s.list = append(s.list, common.Address{})
-	copy(s.list[i+1:], s.list[i:])
-	s.list[i] = addr
+	return &sortedAddresses{list: list}
 }
 
 type pool struct {
