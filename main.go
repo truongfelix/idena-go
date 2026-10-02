@@ -44,6 +44,7 @@ func main() {
 		config.MaxNetworkDelayFlag,
 		config.FastSyncFlag,
 		config.ForceFullSyncFlag,
+		config.DbWriteBufferFlag,
 		config.ProfileFlag,
 		config.IpfsPortStaticFlag,
 		config.ApiKeyFlag,

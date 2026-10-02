@@ -46,6 +46,7 @@ type Config struct {
 	OfflineDetection *OfflineDetectionConfig
 	Blockchain       *BlockchainConfig
 	Mempool          *Mempool
+	Database         *DatabaseConfig
 }
 
 func (c *Config) ProvideNodeKey(key string, password string, withBackup bool) error {
@@ -321,7 +322,8 @@ func getDefaultConfig(dataDir string) *Config {
 			StoreCertRange: DefaultStoreCertRange,
 			BurnTxRange:    DefaultBurntTxRange,
 		},
-		Mempool: GetDefaultMempoolConfig(),
+		Mempool:  GetDefaultMempoolConfig(),
+		Database: &DatabaseConfig{},
 	}
 }
 
@@ -335,6 +337,16 @@ func applyFlags(ctx *cli.Context, cfg *Config) {
 	applyIpfsFlags(ctx, cfg)
 	applyValidationFlags(ctx, cfg)
 	applySyncFlags(ctx, cfg)
+	applyDatabaseFlags(ctx, cfg)
+}
+
+func applyDatabaseFlags(ctx *cli.Context, cfg *Config) {
+	if ctx.IsSet(DbWriteBufferFlag.Name) {
+		if cfg.Database == nil {
+			cfg.Database = &DatabaseConfig{}
+		}
+		cfg.Database.WriteBufferMiB = ctx.Int(DbWriteBufferFlag.Name)
+	}
 }
 
 func applyCommonFlags(ctx *cli.Context, cfg *Config) {
@@ -403,6 +415,9 @@ func applyIpfsFlags(ctx *cli.Context, cfg *Config) {
 }
 
 func validateConfig(cfg *Config) error {
+	if err := validateDatabaseConfig(cfg.Database); err != nil {
+		return err
+	}
 	if cfg.IpfsConf == nil {
 		return nil
 	}

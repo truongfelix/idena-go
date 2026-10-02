@@ -193,7 +193,7 @@ func NewNodeWithInjections(config *config.Config, bus eventbus.Bus, statsCollect
 	}
 
 	bus.Publish(&events.DatabaseInitEvent{})
-	db, err := OpenDatabase(config.DataDir, "idenachain", 16, 16, true)
+	db, err := OpenDatabaseWithWriteBuffer(config.DataDir, "idenachain", 16, 16, config.DatabaseWriteBufferMiB(), true)
 	bus.Publish(&events.DatabaseInitCompletedEvent{})
 
 	if err != nil {
@@ -455,10 +455,21 @@ func (node *Node) stopHTTP() {
 }
 
 func OpenDatabase(datadir string, name string, cache int, handles int, compact bool) (db.DB, error) {
+	return OpenDatabaseWithWriteBuffer(datadir, name, cache, handles, 0, compact)
+}
+
+// OpenDatabaseWithWriteBuffer is OpenDatabase with a write buffer of writeBufferMiB (0: cache/4 MiB). The write
+// buffer is not stored in the database: each open may use another size (the journal left by a stop without a
+// clean close is replayed into level-0 tables of the new size).
+func OpenDatabaseWithWriteBuffer(datadir string, name string, cache int, handles int, writeBufferMiB int, compact bool) (db.DB, error) {
+	writeBuffer := cache / 4 * opt.MiB
+	if writeBufferMiB > 0 {
+		writeBuffer = writeBufferMiB * opt.MiB
+	}
 	res, err := db.NewGoLevelDBWithOpts(name, datadir, &opt.Options{
 		OpenFilesCacheCapacity: handles,
 		BlockCacheCapacity:     cache / 2 * opt.MiB,
-		WriteBuffer:            cache / 4 * opt.MiB,
+		WriteBuffer:            writeBuffer,
 		Filter:                 filter.NewBloomFilter(10),
 	})
 	if err != nil {
