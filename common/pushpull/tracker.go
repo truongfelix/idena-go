@@ -46,6 +46,9 @@ type DefaultPushTracker struct {
 	//pending pushes
 	pendingPushes *sortedPendingPushes
 
+	//signals the loop that a pending push was added
+	pendingAdded chan struct{}
+
 	holder Holder
 }
 
@@ -56,6 +59,7 @@ func NewDefaultPushTracker(pullDelay time.Duration) *DefaultPushTracker {
 	return &DefaultPushTracker{
 		activePulls:   &sync.Map{},
 		pendingPushes: newSortedPendingPushes(),
+		pendingAdded:  make(chan struct{}, 1),
 		requests:      make(chan PendingPulls, 1000),
 		pullDelay:     pullDelay,
 	}
@@ -82,6 +86,10 @@ func (d *DefaultPushTracker) AddPendingPush(id peer.ID, hash common.Hash128) {
 	if timestamp, ok := d.activePulls.Load(hash); ok {
 		newReq := pendingRequestTime{PendingPulls{Id: id, Hash: hash}, timestamp.(time.Time)}
 		d.pendingPushes.Add(newReq)
+		select {
+		case d.pendingAdded <- struct{}{}:
+		default:
+		}
 	}
 }
 
@@ -98,7 +106,7 @@ func (d *DefaultPushTracker) Run() {
 func (d *DefaultPushTracker) loop() {
 	for {
 		if d.pendingPushes.Len() == 0 {
-			time.Sleep(time.Millisecond * 10)
+			<-d.pendingAdded
 			continue
 		}
 		obj := d.pendingPushes.Peek(0)

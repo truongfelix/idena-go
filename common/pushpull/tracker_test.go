@@ -4,6 +4,8 @@ import (
 	"github.com/idena-network/idena-go/common"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/stretchr/testify/require"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -105,6 +107,48 @@ func TestDefaultPushTracker_AddPendingRequest(t *testing.T) {
 
 	tracker.AddPendingPush("1", common.Hash128{})
 	require.Equal(t, 0, tracker.pendingPushes.Len())
+}
+
+func TestDefaultPushTracker_IdleLoopWaitsForPendingPush(t *testing.T) {
+	tracker := NewDefaultPushTracker(time.Millisecond * 50)
+	NewDefaultHolder(1, tracker)
+
+	// With no pending push, the loops block until one is added instead of waking up periodically.
+	require.Eventually(t, func() bool {
+		states := trackerLoopStates()
+		if len(states) == 0 {
+			return false
+		}
+		for _, state := range states {
+			if !strings.HasPrefix(state, "chan receive") {
+				return false
+			}
+		}
+		return true
+	}, time.Second, time.Millisecond*10)
+
+	hash := common.Hash128{0x1}
+	tracker.RegisterPull(hash)
+	tracker.AddPendingPush("1", hash)
+
+	pull := requirePendingPull(t, tracker.Requests(), time.Second)
+	require.Equal(t, peer.ID("1"), pull.Id)
+	require.Equal(t, hash, pull.Hash)
+}
+
+// trackerLoopStates returns the scheduler state of every goroutine running DefaultPushTracker.loop.
+func trackerLoopStates() []string {
+	buf := make([]byte, 1<<20)
+	buf = buf[:runtime.Stack(buf, true)]
+	var states []string
+	for _, g := range strings.Split(string(buf), "\n\n") {
+		if !strings.Contains(g, "pushpull.(*DefaultPushTracker).loop(") {
+			continue
+		}
+		header := g[:strings.Index(g, "\n")]
+		states = append(states, header[strings.Index(header, "[")+1:strings.LastIndex(header, "]")])
+	}
+	return states
 }
 
 func requirePendingPull(t *testing.T, requests <-chan PendingPulls, timeout time.Duration) PendingPulls {

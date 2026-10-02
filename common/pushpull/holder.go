@@ -73,5 +73,8 @@ func (d *DefaultHolder) Get(hash common.Hash128) (entry interface{}, id common.S
 }
 
 func (d *DefaultHolder) MaxParallelPulls() uint32 {
-	return 3
+	if d.maxPulls < 1 {
+		return 1
+	}
+	return uint32(d.maxPulls)
 }

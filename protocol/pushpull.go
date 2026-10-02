@@ -76,7 +76,9 @@ func (m *PushPullManager) addPush(id peer.ID, hash pushPullHash) {
 
 	pendingPush := value.(*pendingPush)
 	cnt := atomic.AddUint32(&pendingPush.cnt, 1)
-	if cnt >= holder.MaxParallelPulls() {
+	// cnt counts the pushes of this hash, the first one included: pull from the first
+	// MaxParallelPulls pushers, keep the others for the push tracker.
+	if cnt > holder.MaxParallelPulls() {
 		if holder.SupportPendingRequests() {
 			holder.PushTracker().AddPendingPush(id, hash.Hash)
 		}

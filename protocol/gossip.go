@@ -110,7 +110,7 @@ func NewIdenaGossipHandler(host core.Host, pubsub *pubsub.PubSub, cfg config.P2P
 		connManager:         NewConnManager(host, cfg),
 	}
 	handler.pushPullManager.AddEntryHolder(pushVote, pushpull.NewDefaultHolder(1, pushpull.NewDefaultPushTracker(time.Millisecond*300)))
-	handler.pushPullManager.AddEntryHolder(pushBlock, pushpull.NewDefaultHolder(1, pushpull.NewDefaultPushTracker(time.Second*3)))
+	handler.pushPullManager.AddEntryHolder(pushBlock, pushpull.NewDefaultHolder(2, pushpull.NewDefaultPushTracker(time.Second*3)))
 	handler.pushPullManager.AddEntryHolder(pushProof, pushpull.NewDefaultHolder(1, pushpull.NewDefaultPushTracker(time.Second*1)))
 	handler.pushPullManager.AddEntryHolder(pushFlip, pushpull.NewDefaultHolder(1, pushpull.NewDefaultPushTracker(time.Second*5)))
 	handler.pushPullManager.AddEntryHolder(pushKeyPackage, flipKeyPool)
