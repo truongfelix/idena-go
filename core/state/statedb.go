@@ -1505,11 +1505,12 @@ func (s *StateDB) IterateIdentities(fn func(key []byte, value []byte) bool) bool
 	if !enabled {
 		return s.tree.GetImmutable().IterateRange(start, end, true, fn)
 	}
-	changes, trackable := treeChanges(s.tree)
+	tree := s.tree
+	changes, trackable := treeChanges(tree)
 	if !trackable {
-		return s.tree.GetImmutable().IterateRange(start, end, true, fn)
+		return tree.GetImmutable().IterateRange(start, end, true, fn)
 	}
-	if cached != nil && cached.treeChanges == changes {
+	if cached != nil && cached.tree == tree && cached.treeChanges == changes {
 		for i := range cached.keys {
 			if fn(cached.keys[i], cached.values[i]) {
 				return true
@@ -1517,13 +1518,13 @@ func (s *StateDB) IterateIdentities(fn func(key []byte, value []byte) bool) bool
 		}
 		return false
 	}
-	walk := &identitiesIteration{treeChanges: changes}
-	stopped := s.tree.GetImmutable().IterateRange(start, end, true, func(key []byte, value []byte) bool {
+	walk := &identitiesIteration{tree: tree, treeChanges: changes}
+	stopped := tree.GetImmutable().IterateRange(start, end, true, func(key []byte, value []byte) bool {
 		walk.keys = append(walk.keys, key)
 		walk.values = append(walk.values, value)
 		return fn(key, value)
 	})
-	if after, _ := treeChanges(s.tree); !stopped && after == changes {
+	if after, _ := treeChanges(tree); !stopped && after == changes {
 		s.identitiesIterationLock.Lock()
 		if s.identitiesIterationEnabled {
 			s.identitiesIteration = walk
@@ -1533,9 +1534,11 @@ func (s *StateDB) IterateIdentities(fn func(key []byte, value []byte) bool) bool
 	return stopped
 }
 
-// identitiesIteration is one full walk of the identity range, taken when the tree's change
-// counter was treeChanges.
+// identitiesIteration is one full walk of the identity range of tree, taken when its change
+// counter was treeChanges. The tree is kept too: a tree that replaces it (CommitSnapshot) has a
+// counter of its own, which can reach the same value.
 type identitiesIteration struct {
+	tree         Tree
 	treeChanges  uint64
 	keys, values [][]byte
 }

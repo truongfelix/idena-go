@@ -336,6 +336,42 @@ func TestStateDB_RecoverSnapshot2(t *testing.T) {
 	require.False(t, it.Valid())
 }
 
+// CommitSnapshot replaces the tree with a new one, whose change counter starts again. A walk of the
+// identities kept from the old tree must not be replayed, even when the new tree's counter has the
+// same value.
+func TestIdentitiesIterationCacheFollowsTreeReplacement(t *testing.T) {
+	database := db.NewMemDB()
+	stateDb, err := NewLazy(database)
+	require.NoError(t, err)
+	a, b := common.Address{0x1}, common.Address{0x2}
+	stateDb.SetState(a, Verified)
+	stateDb.Commit(false)
+	snapshotRoot := stateDb.Root()
+	stateDb.SetState(b, Verified)
+	stateDb.Commit(false)
+
+	// A state loaded at version 2 keeps a walk of both identities.
+	stateDb, err = NewLazy(database)
+	require.NoError(t, err)
+	require.NoError(t, stateDb.Load(2))
+	stateDb.EnableIdentitiesIterationCache()
+	defer stateDb.DisableIdentitiesIterationCache()
+	keys, _ := collectIdentities(stateDb)
+	require.Equal(t, [][]byte{StateDbKeys.IdentityKey(a), StateDbKeys.IdentityKey(b)}, keys)
+
+	// Switch to the snapshot of version 1, whose tree is loaded once, like the tree it replaces.
+	buffer := new(bytes.Buffer)
+	_, err = stateDb.WriteSnapshot2(1, buffer)
+	require.NoError(t, err)
+	require.NoError(t, stateDb.RecoverSnapshot2(1, snapshotRoot, buffer))
+	common.ClearDb(stateDb.CommitSnapshot(1, nil))
+	require.Equal(t, stateDb.identitiesIteration.treeChanges, stateDb.tree.(*MutableTree).Changes(),
+		"the new tree's counter must match the kept walk's")
+
+	keys, _ = collectIdentities(stateDb)
+	require.Equal(t, [][]byte{StateDbKeys.IdentityKey(a)}, keys)
+}
+
 func TestStateDB_Set_Has_ValidationTxBit(t *testing.T) {
 	database := db.NewMemDB()
 	stateDb, _ := NewLazy(database)
