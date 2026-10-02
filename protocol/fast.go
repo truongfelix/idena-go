@@ -93,10 +93,7 @@ func (fs *fastSync) dropPreliminaries() {
 	fs.chain.RemovePreliminaryHead(nil)
 	fs.chain.RemovePreliminaryConsensusVersion()
 	fs.chain.RemovePreliminaryIntermediateGenesis()
-	if fs.prevConfig != nil {
-		fs.upgrader.RevertConfig(fs.prevConfig)
-		fs.prevConfig = nil
-	}
+	fs.revertConsensusConfig()
 	fs.appState.IdentityState.DropPreliminary()
 	fs.identityStateDB = nil
 }
@@ -109,8 +106,25 @@ func (fs *fastSync) loadValidators() {
 func (fs *fastSync) tryUpgradeConsensus(header *types.Header) {
 	if header.ProposedHeader != nil && header.ProposedHeader.Upgrade == uint32(fs.upgrader.Target()) {
 		fs.log.Info("Detect upgrade block while fast syncing", "upgrade", fs.upgrader.Target())
-		fs.prevConfig = fs.upgrader.UpgradeConfigTo(header.ProposedHeader.Upgrade)
+		fs.upgradeConsensusTo(header.ProposedHeader.Upgrade)
 		fs.chain.WritePreliminaryConsensusVersion(header.ProposedHeader.Upgrade)
+	}
+}
+
+// upgradeConsensusTo applies the consensus version of the downloaded headers. The config from before the
+// first upgrade is kept: the node's own chain still follows it until the fast sync switches to the
+// downloaded chain.
+func (fs *fastSync) upgradeConsensusTo(ver uint32) {
+	if prev := fs.upgrader.UpgradeConfigTo(ver); prev != nil && fs.prevConfig == nil {
+		fs.prevConfig = prev
+	}
+}
+
+// revertConsensusConfig restores the consensus config of the node's own chain.
+func (fs *fastSync) revertConsensusConfig() {
+	if fs.prevConfig != nil {
+		fs.upgrader.RevertConfig(fs.prevConfig)
+		fs.prevConfig = nil
 	}
 }
 
@@ -130,7 +144,7 @@ func (fs *fastSync) preConsuming(head *types.Header) (from uint64, err error) {
 		return 0, err
 	}
 	if ver > 0 {
-		fs.prevConfig = fs.upgrader.UpgradeConfigTo(ver)
+		fs.upgradeConsensusTo(ver)
 	}
 	fs.tryUpgradeConsensus(fs.chain.PreliminaryHead)
 	fs.identityStateDB, err = fs.appState.IdentityState.LoadPreliminary(fs.chain.PreliminaryHead.Height())
@@ -365,7 +379,14 @@ func (fs *fastSync) validateHeader(block *block) error {
 	return nil
 }
 
-func (fs *fastSync) postConsuming() error {
+func (fs *fastSync) postConsuming() (err error) {
+	// Until the switch to the downloaded chain, blocks of the node's own chain follow its own consensus
+	// version: a full sync or the next attempt must not apply them with the version of the headers.
+	defer func() {
+		if err != nil {
+			fs.revertConsensusConfig()
+		}
+	}()
 	if fs.chain.PreliminaryHead.Height() != fs.manifest.Height {
 		return errors.New("preliminary head is lower than manifest's head")
 	}
