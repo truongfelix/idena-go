@@ -1945,6 +1945,11 @@ func (vc *ValidationCeremony) loadAllFlips(ctx context.Context) {
 // is a candidate of. A map whose sender is not a candidate in any shard is
 // dropped.
 func (vc *ValidationCeremony) readEvidenceMapsByShard() map[common.ShardId][][]byte {
+	// No shards: the per-shard reads this replaces never ran, so the evidence
+	// table is not read either.
+	if len(vc.shardCandidates) == 0 {
+		return nil
+	}
 	// Build the sender->shards index in shard-id order. Iterating shard ids
 	// ascending (rather than ranging over the shardCandidates map) keeps each
 	// sender's shard list ascending and deduplicated: a sender listed twice

@@ -350,3 +350,36 @@ func TestReadEvidenceMapsByShard_PreservesDbOrder(t *testing.T) {
 	want := [][]byte{{0x10}, {0x11}, {0x12}, {0x13}}
 	require.Equal(t, want, got)
 }
+
+// countingDB counts the range scans of the evidence table.
+type countingDB struct {
+	db.DB
+	scans int
+}
+
+func (c *countingDB) Iterator(start, end []byte) (db.Iterator, error) {
+	c.scans++
+	return c.DB.Iterator(start, end)
+}
+
+func (c *countingDB) ReverseIterator(start, end []byte) (db.Iterator, error) {
+	c.scans++
+	return c.DB.ReverseIterator(start, end)
+}
+
+// TestReadEvidenceMapsByShard_NoShards: with no shards, ApplyNewEpoch's shard
+// loop does not run, so the original per-shard reads never read the evidence
+// table. The grouping must not read it either, nor touch the epoch DB at all.
+func TestReadEvidenceMapsByShard_NoShards(t *testing.T) {
+	for _, shardCandidates := range []map[common.ShardId]*candidatesOfShard{nil, {}} {
+		evidence := &countingDB{DB: db.NewMemDB()}
+		edb := database.NewEpochDb(evidence, 1)
+		edb.WriteEvidenceMap(addr(0x10), []byte{1})
+		scans := evidence.scans
+
+		vc := &ValidationCeremony{epochDb: edb, shardCandidates: shardCandidates}
+		require.Empty(t, vc.readEvidenceMapsByShard())
+		require.Equal(t, scans, evidence.scans)
+	}
+	require.NotPanics(t, func() { (&ValidationCeremony{}).readEvidenceMapsByShard() })
+}
