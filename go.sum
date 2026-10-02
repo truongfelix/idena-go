@@ -1351,13 +1351,13 @@ github.com/tmc/grpc-websocket-proxy v0.0.0-20200427203606-3cfed13b9966/go.mod h1
 github.com/tomarrell/wrapcheck/v2 v2.4.0/go.mod h1:68bQ/eJg55BROaRTbMjC7vuhL2OgfoG8bLp9ZyoBfyY=
 github.com/tomasen/realip v0.0.0-20180522021738-f0c99a92ddce/go.mod h1:o8v6yHRoik09Xen7gje4m9ERNah1d1PPsVq1VEx9vE4=
 github.com/tommy-muehle/go-mnd/v2 v2.4.0/go.mod h1:WsUAkMJMYww6l/ufffCD3m+P7LEvr8TnZn9lwVDlgzw=
+github.com/truongfelix/go-libp2p-kad-dht v0.41.1-0.20260924080750-83f1403bcb17 h1:t16qzuHuG7hKdqWQIflr6O+DqRxzXTIcvtOQUcd5OoY=
+github.com/truongfelix/go-libp2p-kad-dht v0.41.1-0.20260924080750-83f1403bcb17/go.mod h1:2qc4QGLvmIdznYbNg++FF76vp4q2SaBZyr76jHV8xgs=
+github.com/truongfelix/idena-wasm-binding v0.0.0-20260923235352-01ccca5cc3c9 h1:0nz/T+pwHo3aFzHSM4iPzdmQQBLi8TsXAkwvEtz/7i8=
+github.com/truongfelix/idena-wasm-binding v0.0.0-20260923235352-01ccca5cc3c9/go.mod h1:Gaqs/PYOTw9Jr1VQPlR0Be+CcgsuP4sdGmTzzQ5hvQ0=
 github.com/ttacon/chalk v0.0.0-20160626202418-22c06c80ed31/go.mod h1:onvgF043R+lC5RZ8IT9rBXDaEDnpnw/Cl+HFiw+v/7Q=
 github.com/tv42/httpunix v0.0.0-20150427012821-b75d8614f926/go.mod h1:9ESjWnEqriFuLhtthL60Sar/7RFoluCcXsuvEwTV5KM=
 github.com/tv42/httpunix v0.0.0-20191220191345-2ba4b9c3382c/go.mod h1:hzIxponao9Kjc7aWznkXaL4U4TWaDSs8zcsY4Ka08nM=
-github.com/ubiubi18/go-libp2p-kad-dht v0.41.1-0.20260924080750-83f1403bcb17 h1:PAicDuZnIOdu7QemFgigOIxCZksgbHWcewUdoTq2rvg=
-github.com/ubiubi18/go-libp2p-kad-dht v0.41.1-0.20260924080750-83f1403bcb17/go.mod h1:2qc4QGLvmIdznYbNg++FF76vp4q2SaBZyr76jHV8xgs=
-github.com/ubiubi18/idena-wasm-binding v0.0.0-20260923235352-01ccca5cc3c9 h1:MvIZtvfG5+kWnW/EHQzq4K6nWx+FOW0ukR/Q85E6/S0=
-github.com/ubiubi18/idena-wasm-binding v0.0.0-20260923235352-01ccca5cc3c9/go.mod h1:Gaqs/PYOTw9Jr1VQPlR0Be+CcgsuP4sdGmTzzQ5hvQ0=
 github.com/ucarion/urlpath v0.0.0-20200424170820-7ccc79b76bbb h1:Ywfo8sUltxogBpFuMOFRrrSifO788kAFxmvVw31PtQQ=
 github.com/ucarion/urlpath v0.0.0-20200424170820-7ccc79b76bbb/go.mod h1:ikPs9bRWicNw3S7XpJ8sK/smGwU9WcSVU3dy9qahYBM=
 github.com/ugorji/go v1.1.4/go.mod h1:uQMGLiO92mf5W77hV/PUCpI3pbzQx3CRekS0kk+RGrc=

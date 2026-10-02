@@ -14,7 +14,7 @@ import (
 
 const (
 	kadDHTModule         = "github.com/libp2p/go-libp2p-kad-dht"
-	patchedKadDHTMod     = "github.com/ubiubi18/go-libp2p-kad-dht"
+	patchedKadDHTMod     = "github.com/truongfelix/go-libp2p-kad-dht"
 	patchedKadDHTVersion = "v0.41.1-0.20260924080750-83f1403bcb17"
 )
 

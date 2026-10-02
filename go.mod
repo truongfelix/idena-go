@@ -270,10 +270,10 @@ require (
 
 replace github.com/cosmos/iavl => github.com/idena-network/iavl v0.12.3-0.20211223100228-a33b117aa31e
 
-replace github.com/idena-network/idena-wasm-binding => github.com/ubiubi18/idena-wasm-binding v0.0.0-20260923235352-01ccca5cc3c9
+replace github.com/idena-network/idena-wasm-binding => github.com/truongfelix/idena-wasm-binding v0.0.0-20260923235352-01ccca5cc3c9
 
 go 1.26.8
 
 tool golang.org/x/vuln/cmd/govulncheck
 
-replace github.com/libp2p/go-libp2p-kad-dht => github.com/ubiubi18/go-libp2p-kad-dht v0.41.1-0.20260924080750-83f1403bcb17
+replace github.com/libp2p/go-libp2p-kad-dht => github.com/truongfelix/go-libp2p-kad-dht v0.41.1-0.20260924080750-83f1403bcb17
