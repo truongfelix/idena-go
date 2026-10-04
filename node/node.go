@@ -32,6 +32,7 @@ import (
 	"github.com/idena-network/idena-go/subscriptions"
 	"github.com/idena-network/idena-go/vm"
 	"github.com/pkg/errors"
+	"github.com/syndtr/goleveldb/leveldb"
 	"github.com/syndtr/goleveldb/leveldb/filter"
 	"github.com/syndtr/goleveldb/leveldb/opt"
 	"github.com/tendermint/tm-db"
@@ -39,6 +40,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -181,6 +183,10 @@ func NewNodeWithInjections(config *config.Config, bus eventbus.Bus, statsCollect
 	bus.Publish(&events.DatabaseInitEvent{})
 	db, err := OpenDatabase(config.DataDir, "idenachain", 16, 16, true)
 	bus.Publish(&events.DatabaseInitCompletedEvent{})
+	if statsPath := os.Getenv("IDENA_DBSTATS"); statsPath != "" && err == nil {
+		// HARNESS: chain DB counters to IDENA_DBSTATS (harness_dbstats.go).
+		startHarnessDbStats(db.(interface{ DB() *leveldb.DB }).DB(), statsPath)
+	}
 
 	if err != nil {
 		return nil, err
@@ -329,6 +335,11 @@ func (node *Node) StartWithHeight(height uint64) error {
 	node.votes.Initialize(node.blockchain.Head)
 	node.fp.Initialize()
 	currentBlock := node.blockchain.GetBlock(node.blockchain.Head.Hash())
+	// REPLAY TEST HARNESS ONLY: retry instead of exiting so IPFS connectivity can be observed.
+	for attempt := 1; currentBlock == nil && attempt <= 40; attempt++ {
+		node.log.Warn("HARNESS: current block unavailable, retrying", "attempt", attempt)
+		currentBlock = node.blockchain.GetBlock(node.blockchain.Head.Hash())
+	}
 	if err := node.ceremony.Initialize(currentBlock); err != nil {
 		return errors.Wrap(err, "cannot initialize validation ceremony")
 	}
@@ -441,22 +452,75 @@ func (node *Node) stopHTTP() {
 }
 
 func OpenDatabase(datadir string, name string, cache int, handles int, compact bool) (db.DB, error) {
+	writeBuffer := cache / 4 * opt.MiB
+	// REPLAY TEST HARNESS ONLY: IDENA_DB_WRITEBUFFER_MB overrides the write buffer (block cache and
+	// open files unchanged) for the write-buffer A/B (notes/write-buffer-ab-plan.md).
+	if mb, err := strconv.Atoi(os.Getenv("IDENA_DB_WRITEBUFFER_MB")); err == nil && mb > 0 {
+		writeBuffer = mb * opt.MiB
+	}
+	return openDatabaseHarness(datadir, name, cache, handles, writeBuffer, false, compact)
+}
+
+// REPLAY TEST HARNESS ONLY: OpenDatabase with an explicit write buffer, optionally read-only.
+func openDatabaseHarness(datadir string, name string, cache int, handles int, writeBuffer int, readOnly bool, compact bool) (db.DB, error) {
+	log.Info("HARNESS: chain DB options", "name", name, "writeBufferMiB", writeBuffer/opt.MiB,
+		"blockCacheMiB", cache/2, "openFiles", handles, "readOnly", readOnly)
 	res, err := db.NewGoLevelDBWithOpts(name, datadir, &opt.Options{
 		OpenFilesCacheCapacity: handles,
 		BlockCacheCapacity:     cache / 2 * opt.MiB,
-		WriteBuffer:            cache / 4 * opt.MiB,
+		WriteBuffer:            writeBuffer,
 		Filter:                 filter.NewBloomFilter(10),
+		ReadOnly:               readOnly,
 	})
 	if err != nil {
 		return nil, err
 	}
-	if compact {
+	if compact && needsFullCompaction(res.DB()) {
 		if err := compactDb(res); err != nil {
 			res.Close()
 			return nil, err
 		}
 	}
 	return res, nil
+}
+
+// minShareAboveDeepestLevel is the share of the stored data above the deepest non-empty level
+// from which OpenDatabase runs a full compaction. A full compaction rewrites the whole database
+// but frees about as much as the data above the deepest level (the data written since that
+// level was last compacted), so below this share it costs minutes and frees little.
+const minShareAboveDeepestLevel = 0.1
+
+// needsFullCompaction reports whether enough data sits above the deepest level for a full
+// compaction to be worth it. It returns true if the statistics cannot be read.
+func needsFullCompaction(goLevelDB *leveldb.DB) bool {
+	var stats leveldb.DBStats
+	if err := goLevelDB.Stats(&stats); err != nil {
+		return true
+	}
+	share := shareAboveDeepestLevel(stats.LevelSizes)
+	if share < minShareAboveDeepestLevel {
+		log.Info("Skip DB compaction", "aboveDeepestLevel", fmt.Sprintf("%.1f%%", share*100))
+		return false
+	}
+	return true
+}
+
+// shareAboveDeepestLevel returns the share of the data stored above the deepest non-empty level.
+func shareAboveDeepestLevel(levelSizes leveldb.Sizes) float64 {
+	deepest := -1
+	for level, size := range levelSizes {
+		if size > 0 {
+			deepest = level
+		}
+	}
+	if deepest < 0 {
+		return 0
+	}
+	var above int64
+	for _, size := range levelSizes[:deepest] {
+		above += size
+	}
+	return float64(above) / float64(above+levelSizes[deepest])
 }
 
 func compactDb(goLevelDB *db.GoLevelDB) error {
