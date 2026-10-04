@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"net/http"
+	_ "net/http/pprof" // REPLAY TEST HARNESS ONLY: registers /debug/pprof handlers
 	"os"
 	"path/filepath"
 	"runtime"
@@ -66,6 +68,17 @@ func main() {
 		handler := log.LvlFilterHandler(logLvl, log.StreamHandler(os.Stdout, log.TerminalFormat(useLogColor)))
 
 		log.Root().SetHandler(handler)
+
+		// REPLAY TEST HARNESS ONLY: expose net/http/pprof when IDENA_PPROF_ADDR is set
+		// (e.g. 127.0.0.1:6060). Local debugging aid; never enabled in production.
+		if pprofAddr := os.Getenv("IDENA_PPROF_ADDR"); pprofAddr != "" {
+			go func() {
+				log.Info("HARNESS: pprof endpoint listening", "addr", pprofAddr)
+				if err := http.ListenAndServe(pprofAddr, nil); err != nil {
+					log.Error("HARNESS: pprof endpoint stopped", "err", err)
+				}
+			}()
+		}
 
 		var consensusVersionErr error
 		cfg, err := config.MakeConfig(context, func(cfg *config.Config) {

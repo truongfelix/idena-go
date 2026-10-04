@@ -1128,12 +1128,13 @@ func clearDustAccounts(appState *appstate.AppState, networkSize int, statsCollec
 	minFeePerGas := fee.GetFeePerGasForNetwork(networkSize)
 	commonTxCost := new(big.Int).Mul(commonTxSize, minFeePerGas)
 
-	appState.State.IterateOverAccounts(func(addr common.Address, account state.Account) {
-		if account.Balance == nil || account.Balance.Cmp(commonTxCost) == -1 {
-			collector.BeginDustClearingBalanceUpdate(statsCollector, addr, appState)
-			appState.State.ClearAccount(addr)
-			collector.CompleteBalanceUpdate(statsCollector, appState)
-		}
+	isDust := func(account state.Account) bool {
+		return account.Balance == nil || account.Balance.Cmp(commonTxCost) == -1
+	}
+	appState.State.IterateOverMatchingAccounts(isDust, func(addr common.Address, account state.Account) {
+		collector.BeginDustClearingBalanceUpdate(statsCollector, addr, appState)
+		appState.State.ClearAccount(addr)
+		collector.CompleteBalanceUpdate(statsCollector, appState)
 	})
 }
 
