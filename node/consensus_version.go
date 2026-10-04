@@ -18,11 +18,18 @@ import (
 // the blocks that depend on the upgrades. A new database stores no version and leaves the configuration as it is.
 //
 // The database is opened read-only: nothing is written, and the journal left by a stop without a clean close stays
-// for the node's own open to convert, with the node's write buffer.
+// for the node's own open to convert, with the node's write buffer. If that fails, it is opened as the node opens it.
 func ApplyStoredConsensusVersion(cfg *config.Config) error {
 	db, err := openDatabaseReadOnly(cfg.DataDir, "idenachain")
 	if os.IsNotExist(err) {
 		return nil // no chain database yet
+	}
+	if err != nil {
+		// goleveldb's read-only open fails with EOF when there are two journals or more: it returns the end of one
+		// as an error when it goes on to the next (its read-write open ignores it). A stop while a full memtable is
+		// written to a table leaves two. The node's own open recovers them: open it that way now, it converts them.
+		log.Warn("Cannot open the chain database read-only, opening it read-write", "err", err)
+		db, err = openChainDatabase(cfg, false)
 	}
 	if err != nil {
 		log.Error("Cannot transform consensus config", "err", err)

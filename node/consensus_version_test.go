@@ -1,13 +1,21 @@
 package node
 
 import (
+	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/idena-network/idena-go/config"
 	"github.com/idena-network/idena-go/database"
+	"github.com/syndtr/goleveldb/leveldb"
+	"github.com/syndtr/goleveldb/leveldb/opt"
+	"github.com/syndtr/goleveldb/leveldb/storage"
+	dbm "github.com/tendermint/tm-db"
 )
 
 func writeConsensusVersion(t *testing.T, datadir string, version uint32) {
@@ -171,5 +179,139 @@ func TestApplyStoredConsensusVersionOnAnEmptyDatabaseDirectory(t *testing.T) {
 
 	if cfg.Consensus.Version != config.ConsensusV9 {
 		t.Fatalf("consensus version = %d, want the default %d", cfg.Consensus.Version, config.ConsensusV9)
+	}
+}
+
+// noTableStorage creates no table: a full memtable is never written to one, and its journal stays.
+type noTableStorage struct {
+	storage.Storage
+}
+
+func (s noTableStorage) Create(fd storage.FileDesc) (storage.Writer, error) {
+	if fd.Type == storage.TypeTable {
+		return nil, errors.New("no table in this test")
+	}
+	return s.Storage.Create(fd)
+}
+
+func journals(t *testing.T, dir string) int {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir() error = %v", err)
+	}
+	n := 0
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".log") {
+			n++
+		}
+	}
+	return n
+}
+
+func copyFile(t *testing.T, from, to string) {
+	t.Helper()
+	src, err := os.Open(from)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer src.Close()
+	dst, err := os.Create(to)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	defer dst.Close()
+	if _, err := io.Copy(dst, src); err != nil {
+		t.Fatalf("Copy() error = %v", err)
+	}
+}
+
+// writeConsensusVersionInTwoJournals leaves the chain database of datadir as a node stopped while it wrote a full
+// memtable to a table: the memtable's journal, with the version first, and the next journal, with the version
+// second.
+func writeConsensusVersionInTwoJournals(t *testing.T, datadir string, first, second uint32) {
+	t.Helper()
+	dir := t.TempDir()
+	stor, err := storage.OpenFile(dir, false)
+	if err != nil {
+		t.Fatalf("OpenFile() error = %v", err)
+	}
+	ldb, err := leveldb.Open(noTableStorage{stor}, &opt.Options{WriteBuffer: 64 * opt.KiB})
+	if err != nil {
+		t.Fatalf("leveldb.Open() error = %v", err)
+	}
+	writeVersion := func(v uint32) {
+		mem := dbm.NewMemDB()
+		database.NewRepo(mem).WriteConsensusVersion(nil, v)
+		it, err := mem.Iterator(nil, nil)
+		if err != nil {
+			t.Fatalf("Iterator() error = %v", err)
+		}
+		defer it.Close()
+		for ; it.Valid(); it.Next() {
+			if err := ldb.Put(it.Key(), it.Value(), nil); err != nil {
+				t.Fatalf("Put() error = %v", err)
+			}
+		}
+	}
+	writeVersion(first)
+	for i := 0; journals(t, dir) < 2; i++ {
+		if i == 1000 {
+			t.Fatalf("the memtable was not rotated")
+		}
+		if err := ldb.Put([]byte(fmt.Sprintf("filler-%d", i)), make([]byte, 1024), nil); err != nil {
+			t.Fatalf("Put() error = %v", err)
+		}
+	}
+	writeVersion(second)
+
+	// The files as the stop leaves them.
+	target := filepath.Join(datadir, "idenachain.db")
+	if err := os.Mkdir(target, 0755); err != nil {
+		t.Fatalf("Mkdir() error = %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir() error = %v", err)
+	}
+	for _, e := range entries {
+		if e.Name() != "LOCK" {
+			copyFile(t, filepath.Join(dir, e.Name()), filepath.Join(target, e.Name()))
+		}
+	}
+	_ = ldb.Close() // it reports the table it could not write
+	if err := stor.Close(); err != nil {
+		t.Fatalf("storage Close() error = %v", err)
+	}
+}
+
+func TestApplyStoredConsensusVersionAfterAStopWithTwoJournals(t *testing.T) {
+	datadir := t.TempDir()
+	writeConsensusVersionInTwoJournals(t, datadir, uint32(config.ConsensusV11), uint32(config.ConsensusV12))
+	if n := journals(t, filepath.Join(datadir, "idenachain.db")); n != 2 {
+		t.Fatalf("journals = %d, want 2", n)
+	}
+	// The state that goleveldb's read-only open cannot read.
+	if ro, err := openDatabaseReadOnly(datadir, "idenachain"); err == nil {
+		ro.Close()
+		t.Fatalf("read-only open of two journals succeeded: the test does not build the failing state")
+	}
+	cfg := &config.Config{DataDir: datadir, Consensus: defaultConsensusCopy()}
+
+	if err := ApplyStoredConsensusVersion(cfg); err != nil {
+		t.Fatalf("ApplyStoredConsensusVersion() error = %v", err)
+	}
+
+	if cfg.Consensus.Version != config.ConsensusV12 {
+		t.Fatalf("consensus version = %d, want the one of the last journal %d", cfg.Consensus.Version, config.ConsensusV12)
+	}
+	// The node's own open follows.
+	db, err := openChainDatabase(cfg, false)
+	if err != nil {
+		t.Fatalf("openChainDatabase() error = %v", err)
+	}
+	defer db.Close()
+	if v, err := database.NewRepo(db).ReadConsensusVersionWithError(); err != nil || v != uint32(config.ConsensusV12) {
+		t.Fatalf("stored consensus version = %d, %v, want %d", v, err, config.ConsensusV12)
 	}
 }
