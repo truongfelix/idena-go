@@ -224,6 +224,12 @@ func NewNodeWithInjections(config *config.Config, bus eventbus.Bus, statsCollect
 	if err != nil {
 		return nil, err
 	}
+	// Before any sync: the state data that nothing refers to is left by an interrupted or abandoned fast sync.
+	if dropped, err := state.DropOrphanedPrefixes(db); err != nil {
+		log.Error("Cannot drop orphaned state data", "err", err)
+	} else if len(dropped) > 0 {
+		log.Info("Dropped orphaned state data", "prefixes", len(dropped))
+	}
 
 	// Every component gets the collector with the validation summaries recorded on the side (dna_validationSummary).
 	summaries := validationsummary.NewStore(db)

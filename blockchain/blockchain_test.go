@@ -17,6 +17,7 @@ import (
 	"github.com/idena-network/idena-go/core/validators"
 	"github.com/idena-network/idena-go/crypto"
 	"github.com/idena-network/idena-go/crypto/vrf/p256"
+	"github.com/idena-network/idena-go/stats/collector"
 	"github.com/idena-network/idena-go/tests"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
@@ -2521,4 +2522,26 @@ func TestBlockchainLookupRejectsIndexAtLength(t *testing.T) {
 	require.NotPanics(t, func() {
 		require.Nil(t, chain.GetReceipt(receiptHash))
 	})
+}
+
+// Dropping the headers of an unfinished fast sync also drops the consensus version and the intermediate
+// genesis recorded from them (a later fast sync, from other headers, must not switch to those) and the fast
+// sync's copy of the identity state.
+func TestAddBlockDropsWhatTheFastSyncRecorded(t *testing.T) {
+	chain, appState := NewTestBlockchainWithBlocks(1, 0)
+	_, err := appState.IdentityState.CreatePreliminaryCopy(chain.Head.Height())
+	require.NoError(t, err)
+	block := chain.GenerateEmptyBlock()
+	require.NoError(t, chain.AddHeaderUnsafe(block.Header))
+	chain.WritePreliminaryConsensusVersion(uint32(config.ConsensusV12))
+	chain.WritePreliminaryIntermediateGenesis(block.Height())
+
+	// The block is the top of the headers.
+	require.NoError(t, chain.AddBlock(block, nil, collector.NewStatsCollector()))
+
+	require.Nil(t, chain.PreliminaryHead)
+	require.Nil(t, chain.ReadPreliminaryHead())
+	require.Zero(t, chain.ReadPreliminaryConsensusVersion())
+	require.Zero(t, chain.repo.ReadPreliminaryIntermediateGenesis())
+	require.False(t, appState.IdentityState.HasPreliminary())
 }

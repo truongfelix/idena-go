@@ -1,6 +1,7 @@
 package state
 
 import (
+	"bytes"
 	"fmt"
 	"github.com/golang/protobuf/proto"
 	"github.com/idena-network/idena-go/common"
@@ -412,12 +413,44 @@ func (s *IdentityStateDB) SwitchToPreliminary(height uint64) (batch dbm.Batch, d
 	return batch, dropDb, nil
 }
 
+// preliminaryCopyPrefix returns the prefix of the copy of the identity state made for a fast sync, or nil when
+// there is none. The stored prefix is no copy when it is unset or empty (no copy was made, or it was dropped, or
+// it became the identity state), not the prefix of a copy, or the prefix of the identity state: clearing it
+// would clear the identity state (LoadDbPrefix reads an unset prefix as prefix 0, the identity state of a node
+// that never switched to a fast-synced chain) or the whole database (an empty prefix).
+func (s *IdentityStateDB) preliminaryCopyPrefix() ([]byte, error) {
+	prefix, err := storedDbPrefix(s.original, preliminaryIdentityStateDbPrefixKey, identityStateDbPrefixBytes)
+	if err != nil || prefix == nil {
+		return nil, err
+	}
+	current, err := IdentityStateDbKeys.LoadDbPrefix(s.original, false)
+	if err != nil {
+		return nil, err
+	}
+	if bytes.Equal(prefix, current) {
+		return nil, nil
+	}
+	return prefix, nil
+}
+
+// HasPreliminary reports whether a copy of the identity state made for a fast sync exists.
+func (s *IdentityStateDB) HasPreliminary() bool {
+	prefix, err := s.preliminaryCopyPrefix()
+	return err == nil && prefix != nil
+}
+
+// DropPreliminary removes the copy of the identity state made for a fast sync, if there is one.
 func (s *IdentityStateDB) DropPreliminary() {
-	if prefix, err := IdentityStateDbKeys.LoadDbPrefix(s.original, true); err != nil {
+	prefix, err := s.preliminaryCopyPrefix()
+	if err != nil {
 		s.log.Error("failed to load db prefix", "err", err)
-	} else {
-		pdb := dbm.NewPrefixDB(s.original, prefix)
-		common.ClearDb(pdb)
+		return
+	}
+	if prefix == nil {
+		return
+	}
+	if err := common.ClearDb(dbm.NewPrefixDB(s.original, prefix)); err != nil {
+		s.log.Error("failed to drop the preliminary identity state", "err", err)
 	}
 	b := s.original.NewBatch()
 	IdentityStateDbKeys.SaveDbPrefix(b, []byte{}, true)
@@ -425,6 +458,9 @@ func (s *IdentityStateDB) DropPreliminary() {
 }
 
 func (s *IdentityStateDB) CreatePreliminaryCopy(height uint64) (*IdentityStateDB, error) {
+	// A copy left by an earlier fast sync is stale (the node restarted before the fast sync stored a header):
+	// dropped, it is not left behind under another prefix or mixed with the new copy under the same one.
+	s.DropPreliminary()
 	preliminaryPrefix := IdentityStateDbKeys.buildDbPrefix(height + 1)
 	pdb := dbm.NewPrefixDB(s.original, preliminaryPrefix)
 

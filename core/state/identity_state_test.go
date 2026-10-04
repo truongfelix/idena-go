@@ -166,3 +166,86 @@ func TestStateDB_Precommit(t *testing.T) {
 	require.True(t, diff.Values[1].Deleted)
 	require.False(t, diff.Values[0].Deleted)
 }
+
+func countKeys(t *testing.T, database db.DB) int {
+	it, err := database.Iterator(nil, nil)
+	require.NoError(t, err)
+	defer it.Close()
+	n := 0
+	for ; it.Valid(); it.Next() {
+		n++
+	}
+	return n
+}
+
+// With no copy for a fast sync, dropping it must change nothing. The stored prefix is unset on a node that
+// never fast synced: LoadDbPrefix reads it as prefix 0, the identity state itself. It is empty after a copy was
+// dropped or became the identity state: the prefix of the whole database.
+func TestIdentityStateDB_DropPreliminaryWithoutCopy(t *testing.T) {
+	stateDb := createStateDb()
+	database := stateDb.original
+	require.NoError(t, database.Set([]byte("chain data"), []byte{0x1}))
+	current, err := IdentityStateDbKeys.LoadDbPrefix(database, false)
+	require.NoError(t, err)
+	root := stateDb.Root()
+
+	for _, c := range []struct {
+		name   string
+		stored []byte
+	}{
+		{"never set", nil},
+		{"empty", []byte{}},
+		{"the identity state's", current},
+		{"not a copy's", identityStateDbPrefixBytes},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if c.stored == nil {
+				require.NoError(t, database.Delete(preliminaryIdentityStateDbPrefixKey))
+			} else {
+				require.NoError(t, database.Set(preliminaryIdentityStateDbPrefixKey, c.stored))
+			}
+			keys := countKeys(t, database)
+
+			require.False(t, stateDb.HasPreliminary())
+			stateDb.DropPreliminary()
+
+			require.Equal(t, keys, countKeys(t, database))
+			require.NoError(t, stateDb.Load(100))
+			require.Equal(t, root, stateDb.Root())
+		})
+	}
+}
+
+// A new copy for a fast sync replaces a copy left by an earlier one (the node restarted before that fast sync
+// stored a header): under another prefix it would be left behind for good, under the same prefix the new copy
+// would get its versions.
+func TestIdentityStateDB_CreatePreliminaryCopyDropsStaleCopy(t *testing.T) {
+	t.Run("other prefix", func(t *testing.T) {
+		stateDb := createStateDb()
+		stale, err := stateDb.CreatePreliminaryCopy(100)
+		require.NoError(t, err)
+		stateDb.SetValidated(getRandAddr(), true)
+		stateDb.Commit(true)
+
+		fresh, err := stateDb.CreatePreliminaryCopy(101)
+		require.NoError(t, err)
+
+		require.Zero(t, countKeys(t, stale.db))
+		require.True(t, stateDb.HasPreliminary())
+		require.Equal(t, stateDb.Root(), fresh.Root())
+	})
+	t.Run("same prefix", func(t *testing.T) {
+		stateDb := createStateDb()
+		stale, err := stateDb.CreatePreliminaryCopy(100)
+		require.NoError(t, err)
+		stale.SetValidated(getRandAddr(), true)
+		stale.Commit(true)
+		require.True(t, stale.HasVersion(101))
+
+		fresh, err := stateDb.CreatePreliminaryCopy(100)
+		require.NoError(t, err)
+
+		require.False(t, fresh.HasVersion(101))
+		require.Equal(t, stateDb.Root(), fresh.Root())
+	})
+}
