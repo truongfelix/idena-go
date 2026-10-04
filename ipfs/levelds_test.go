@@ -1,3 +1,5 @@
+//go:build !idena_memory_ipfs
+
 package ipfs
 
 import (
