@@ -44,6 +44,7 @@ require (
 	github.com/Microsoft/go-winio v0.6.2
 	github.com/idena-network/idena-wasm-binding v0.0.0-20260703133323-47b198d9b194
 	github.com/ipfs/boxo v0.41.0
+	github.com/ipfs/go-ds-leveldb v0.5.2
 	github.com/libp2p/go-libp2p v0.48.0
 )
 
@@ -123,7 +124,6 @@ require (
 	github.com/ipfs/go-datastore v0.9.1 // indirect
 	github.com/ipfs/go-ds-badger v0.3.4 // indirect
 	github.com/ipfs/go-ds-flatfs v0.6.0 // indirect
-	github.com/ipfs/go-ds-leveldb v0.5.2 // indirect
 	github.com/ipfs/go-ds-measure v0.2.2 // indirect
 	github.com/ipfs/go-ds-pebble v0.5.11 // indirect
 	github.com/ipfs/go-dsqueue v0.2.0 // indirect

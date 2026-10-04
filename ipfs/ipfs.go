@@ -30,7 +30,6 @@ import (
 	"github.com/ipfs/kubo/core/corerepo"
 	"github.com/ipfs/kubo/core/coreunix"
 	kubolibp2p "github.com/ipfs/kubo/core/node/libp2p"
-	"github.com/ipfs/kubo/plugin/loader"
 	"github.com/ipfs/kubo/repo/fsrepo"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	libp2pcore "github.com/libp2p/go-libp2p/core"
@@ -773,9 +772,13 @@ func loadPlugins(cfg *config.IpfsConfig) error {
 	}
 	pluginPath := filepath.Join(dataDir, "plugins")
 
-	plugins, err := loader.NewPluginLoader(pluginPath)
+	plugins, err := newPluginLoader(pluginPath)
 
 	if err != nil {
+		return errors.WithMessage(err, "ipfs plugin loader error")
+	}
+
+	if err := plugins.Load(&leveldsPlugin{writeBufferMiB: cfg.DatastoreWriteBufferMiB}); err != nil {
 		return errors.WithMessage(err, "ipfs plugin loader error")
 	}
 

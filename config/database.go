@@ -2,7 +2,7 @@ package config
 
 import "github.com/pkg/errors"
 
-// MaxDatabaseWriteBufferMiB bounds DatabaseConfig.WriteBufferMiB.
+// MaxDatabaseWriteBufferMiB bounds DatabaseConfig.WriteBufferMiB and IpfsConfig.DatastoreWriteBufferMiB.
 const MaxDatabaseWriteBufferMiB = 256
 
 // DatabaseConfig holds the chain database (LevelDB) settings.
@@ -29,6 +29,14 @@ func validateDatabaseConfig(cfg *DatabaseConfig) error {
 	if cfg.WriteBufferMiB < 0 || cfg.WriteBufferMiB > MaxDatabaseWriteBufferMiB {
 		return errors.Errorf("invalid Database.WriteBufferMiB %d; allowed: 0 (default, 4 MiB) to %d",
 			cfg.WriteBufferMiB, MaxDatabaseWriteBufferMiB)
+	}
+	return nil
+}
+
+func validateIpfsDatastoreWriteBuffer(mib int) error {
+	if mib < 0 || mib > MaxDatabaseWriteBufferMiB {
+		return errors.Errorf("invalid IpfsConf.DatastoreWriteBufferMiB %d; allowed: 0 (default, 4 MiB) to %d",
+			mib, MaxDatabaseWriteBufferMiB)
 	}
 	return nil
 }
