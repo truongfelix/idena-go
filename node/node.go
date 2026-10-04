@@ -310,6 +310,7 @@ func (node *Node) StartWithHeight(height uint64) error {
 	node.consensusEngine.Start()
 	node.pm.Start()
 	node.upgrader.Start()
+	node.startSnapshotProbe()
 
 	node.stopInitialRPC()
 	// Configure RPC
