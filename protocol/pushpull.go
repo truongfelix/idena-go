@@ -12,8 +12,9 @@ import (
 )
 
 type pendingPush struct {
-	cnt  uint32
-	hash pushPullHash
+	cnt     uint32
+	hash    pushPullHash
+	created time.Time
 }
 
 type pullRequest struct {
@@ -61,9 +62,11 @@ func (m *PushPullManager) addPush(id peer.ID, hash pushPullHash) {
 		value, ok = m.pendingPushes.Get(key)
 		if !ok {
 			m.pendingPushes.SetDefault(key, &pendingPush{
-				cnt:  1,
-				hash: hash,
+				cnt:     1,
+				hash:    hash,
+				created: time.Now(),
 			})
+			harnessInc(&harnessGossip.pullNow[hash.Type])
 			m.makeRequest(id, hash)
 			if holder.SupportPendingRequests() {
 				holder.PushTracker().RegisterPull(hash.Hash)
@@ -78,12 +81,13 @@ func (m *PushPullManager) addPush(id peer.ID, hash pushPullHash) {
 	cnt := atomic.AddUint32(&pendingPush.cnt, 1)
 	// cnt counts the pushes of this hash, the first one included: pull from the first
 	// MaxParallelPulls pushers, keep the others for the push tracker.
-	if cnt > holder.MaxParallelPulls() {
+	if limit := holder.MaxParallelPulls(); pushpull.HarnessOldPulls && cnt >= limit || !pushpull.HarnessOldPulls && cnt > limit {
 		if holder.SupportPendingRequests() {
 			holder.PushTracker().AddPendingPush(id, hash.Hash)
 		}
 		return
 	}
+	harnessInc(&harnessGossip.pullNow[hash.Type])
 	m.makeRequest(id, hash)
 	if holder.SupportPendingRequests() {
 		holder.PushTracker().RegisterPull(hash.Hash)
@@ -121,6 +125,7 @@ func (m *PushPullManager) Run() {
 func (m *PushPullManager) loop(entryType pushType, holder pushpull.Holder) {
 	for {
 		req := <-holder.PushTracker().Requests()
+		harnessInc(&harnessGossip.pullFb[entryType])
 		m.makeRequest(req.Id, pushPullHash{
 			Type: entryType,
 			Hash: req.Hash,

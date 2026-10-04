@@ -116,6 +116,7 @@ func NewIdenaGossipHandler(host core.Host, pubsub *pubsub.PubSub, cfg config.P2P
 	handler.pushPullManager.AddEntryHolder(pushKeyPackage, flipKeyPool)
 	handler.pushPullManager.AddEntryHolder(pushTx, txpool)
 	handler.pushPullManager.Run()
+	go harnessLogGossip()
 	handler.registerMetrics()
 	return handler
 }
@@ -279,13 +280,17 @@ func (h *IdenaGossipHandler) handle(p *protoPeer) error {
 		}
 		key := msgKey(msg.Payload)
 		if h.isProcessed(key) {
+			harnessInc(&harnessGossip.dup[pushProof])
 			return nil
 		}
 		p.markKey(key)
 		// if peer proposes this msg it should be on `query.Round-1` height
 		p.setHeight(proposal.Round - 1)
 		if ok, _ := h.proposals.AddProposeProof(proposal); ok {
+			h.pushPullManager.harnessArrived(pushProof, proposal.Hash128())
 			h.ProposeProof(proposal)
+		} else {
+			harnessInc(&harnessGossip.rejected[pushProof])
 		}
 	case ProposeBlock:
 		proposal := new(types.BlockProposal)
@@ -297,6 +302,7 @@ func (h *IdenaGossipHandler) handle(p *protoPeer) error {
 		}
 		key := msgKey(msg.Payload)
 		if h.isProcessed(key) {
+			harnessInc(&harnessGossip.dup[pushBlock])
 			return nil
 		}
 		p.markKey(key)
@@ -306,7 +312,10 @@ func (h *IdenaGossipHandler) handle(p *protoPeer) error {
 		// if peer proposes this msg it should be on `query.Round-1` height
 		p.setHeight(proposal.Block.Height() - 1)
 		if ok, _ := h.proposals.AddProposedBlock(proposal, p.id, time.Now().UTC()); ok {
+			h.pushPullManager.harnessArrived(pushBlock, proposal.Hash128())
 			h.ProposeBlock(proposal)
+		} else {
+			harnessInc(&harnessGossip.rejected[pushBlock])
 		}
 	case Vote:
 		vote := new(types.Vote)
@@ -318,12 +327,16 @@ func (h *IdenaGossipHandler) handle(p *protoPeer) error {
 		}
 		key := msgKey(msg.Payload)
 		if h.isProcessed(key) {
+			harnessInc(&harnessGossip.dup[pushVote])
 			return nil
 		}
 		p.markKey(key)
 		p.setPotentialHeight(vote.Header.Round - 1)
 		if h.votes.AddVote(vote) {
+			h.pushPullManager.harnessArrived(pushVote, vote.Hash128())
 			h.SendVote(vote)
+		} else {
+			harnessInc(&harnessGossip.rejected[pushVote])
 		}
 	case NewTx:
 		tx := new(types.Transaction)
@@ -332,6 +345,7 @@ func (h *IdenaGossipHandler) handle(p *protoPeer) error {
 		}
 		key := msgKey(msg.Payload)
 		if h.isProcessed(key) {
+			harnessInc(&harnessGossip.dup[pushTx])
 			return nil
 		}
 		p.markKey(key)
@@ -373,6 +387,7 @@ func (h *IdenaGossipHandler) handle(p *protoPeer) error {
 		}
 		key := msgKey(msg.Payload)
 		if h.isProcessed(key) {
+			harnessInc(&harnessGossip.dup[pushFlip])
 			return nil
 		}
 		p.markKey(key)

@@ -106,6 +106,10 @@ func (d *DefaultPushTracker) Run() {
 func (d *DefaultPushTracker) loop() {
 	for {
 		if d.pendingPushes.Len() == 0 {
+			if HarnessOldTracker {
+				time.Sleep(time.Millisecond * 10)
+				continue
+			}
 			<-d.pendingAdded
 			continue
 		}

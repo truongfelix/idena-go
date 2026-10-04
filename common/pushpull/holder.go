@@ -3,7 +3,14 @@ package pushpull
 import (
 	"github.com/idena-network/idena-go/common"
 	"github.com/patrickmn/go-cache"
+	"os"
 	"time"
+)
+
+// HARNESS (benchmark only): old behaviour switches for the single-pull A/B.
+var (
+	HarnessOldPulls   = os.Getenv("IDENA_HARNESS_OLD_PULLS") == "1"
+	HarnessOldTracker = os.Getenv("IDENA_HARNESS_OLD_TRACKER") == "1"
 )
 
 type Holder interface {
@@ -73,6 +80,9 @@ func (d *DefaultHolder) Get(hash common.Hash128) (entry interface{}, id common.S
 }
 
 func (d *DefaultHolder) MaxParallelPulls() uint32 {
+	if HarnessOldPulls {
+		return 3
+	}
 	if d.maxPulls < 1 {
 		return 1
 	}
