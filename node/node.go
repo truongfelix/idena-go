@@ -311,6 +311,11 @@ func (node *Node) StartWithHeight(height uint64) error {
 	node.votes.Initialize(node.blockchain.Head)
 	node.fp.Initialize()
 	currentBlock := node.blockchain.GetBlock(node.blockchain.Head.Hash())
+	// REPLAY TEST HARNESS ONLY: retry instead of exiting so IPFS connectivity can be observed.
+	for attempt := 1; currentBlock == nil && attempt <= 40; attempt++ {
+		node.log.Warn("HARNESS: current block unavailable, retrying", "attempt", attempt)
+		currentBlock = node.blockchain.GetBlock(node.blockchain.Head.Hash())
+	}
 	if err := node.ceremony.Initialize(currentBlock); err != nil {
 		return errors.Wrap(err, "cannot initialize validation ceremony")
 	}

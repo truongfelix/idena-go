@@ -2364,6 +2364,8 @@ func (chain *Blockchain) validateBlock(checkState *appstate.AppState, block *typ
 		return nil, errors.New("txHash is invalid")
 	}
 
+	chain.reuseMempoolVerification(block.Body.Transactions)
+
 	blockRewardCtx := chain.prepareBlockRewardCtx(block.Header.Coinbase(), checkState, block.Height(), prevBlock)
 
 	var totalFee, totalTips *big.Int
@@ -3092,6 +3094,26 @@ func (chain *Blockchain) WritePreliminaryIntermediateGenesis(height uint64) {
 
 func (chain *Blockchain) RemovePreliminaryIntermediateGenesis() {
 	chain.repo.RemovePreliminaryIntermediateGenesis(nil)
+}
+
+// reuseMempoolVerification copies the sender recovery and proof verification this node already did
+// when a transaction entered its mempool onto the block's copy of the transaction, which is a
+// separate object decoded from the block body, so block validation does not repeat them.
+func (chain *Blockchain) reuseMempoolVerification(txs []*types.Transaction) {
+	if chain.txpool == nil {
+		return
+	}
+	reused := 0
+	for _, tx := range txs {
+		if poolTx := chain.txpool.GetTx(tx.Hash()); poolTx != nil {
+			types.CopyVerification(tx, poolTx)
+			reused++
+		}
+	}
+	if reused > 0 {
+		// REPLAY TEST HARNESS ONLY
+		chain.log.Info("HARNESS: reused mempool verification", "txs", len(txs), "reused", reused)
+	}
 }
 
 func (chain *Blockchain) ipfsLoad() {

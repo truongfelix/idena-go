@@ -51,15 +51,34 @@ func Sender(tx *Transaction) (common.Address, error) {
 	return addr, nil
 }
 
-func IsValidLongSessionAnswers(tx *Transaction) bool {
-	if valid := tx.validLongSessionAnswersProof.Load(); valid != nil {
-		return valid.(bool)
+// IsValidLongSessionAnswers reports whether the long session answers proof of tx has already been
+// verified against seed.
+func IsValidLongSessionAnswers(tx *Transaction, seed Seed) bool {
+	if verifiedSeed := tx.validLongSessionAnswersProof.Load(); verifiedSeed != nil {
+		return verifiedSeed.(Seed) == seed
 	}
 	return false
 }
 
-func MarkAsValidLongSessionAnswers(tx *Transaction) {
-	tx.validLongSessionAnswersProof.Store(true)
+// MarkAsValidLongSessionAnswers records that the long session answers proof of tx is valid for seed.
+func MarkAsValidLongSessionAnswers(tx *Transaction, seed Seed) {
+	tx.validLongSessionAnswersProof.Store(seed)
+}
+
+// CopyVerification copies the sender and the long session answers proof verification cached on
+// src to tx, when tx does not have them yet. Both results depend only on the signed transaction
+// (and the proof seed, which is stored with the flag), so they are copied only when both
+// transactions have the same hash, which covers the whole signed transaction.
+func CopyVerification(tx, src *Transaction) {
+	if tx == src || tx.Hash() != src.Hash() {
+		return
+	}
+	if from := src.from.Load(); from != nil && tx.from.Load() == nil {
+		tx.from.Store(from)
+	}
+	if verifiedSeed := src.validLongSessionAnswersProof.Load(); verifiedSeed != nil && tx.validLongSessionAnswersProof.Load() == nil {
+		tx.validLongSessionAnswersProof.Store(verifiedSeed)
+	}
 }
 
 // Sender may cache the address, allowing it to be used regardless of

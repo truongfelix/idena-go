@@ -33,6 +33,13 @@ type fullSync struct {
 	deferredHeaders      []blockPeer
 	targetHeight         uint64
 	statsCollector       collector.StatsCollector
+	harness              syncTiming // REPLAY TEST HARNESS ONLY
+}
+
+// REPLAY TEST HARNESS ONLY: wall-clock breakdown of full sync per batch.
+type syncTiming struct {
+	headerWait, validateHdr, getBody, addBlock, writeCert, finalize time.Duration
+	blocks, nonEmpty, txs                                           int
 }
 
 func (fs *fullSync) batchSize() uint64 {
@@ -70,11 +77,22 @@ func (fs *fullSync) applyDeferredBlocks(checkState *appstate.AppState) (uint64, 
 	}()
 
 	for _, b := range fs.deferredHeaders {
-		if block, err := fs.GetBlock(b.Header); err != nil {
+		tGet := time.Now()
+		block, err := fs.GetBlock(b.Header)
+		fs.harness.getBody += time.Since(tGet)
+		if err != nil {
 			fs.log.Error("fail to retrieve block", "err", err)
 			return b.Header.Height(), err
 		} else {
-			if err := fs.chain.AddBlock(block, checkState, fs.statsCollector); err != nil {
+			fs.harness.blocks++
+			if b.Header.EmptyBlockHeader == nil {
+				fs.harness.nonEmpty++
+			}
+			fs.harness.txs += len(block.Body.Transactions)
+			tAdd := time.Now()
+			err := fs.chain.AddBlock(block, checkState, fs.statsCollector)
+			fs.harness.addBlock += time.Since(tAdd)
+			if err != nil {
 				if err := fs.appState.ResetTo(fs.chain.Head.Height()); err != nil {
 					return block.Height(), err
 				}
@@ -85,10 +103,15 @@ func (fs *fullSync) applyDeferredBlocks(checkState *appstate.AppState) (uint64, 
 				time.Sleep(time.Second)
 				return block.Height(), err
 			}
+			tCert := time.Now()
 			if !b.Cert.Empty() {
 				fs.chain.WriteCertificate(block.Hash(), b.Cert, true)
 			}
-			if checkState.FinalizePrecommit(block) != nil {
+			fs.harness.writeCert += time.Since(tCert)
+			tFin := time.Now()
+			finErr := checkState.FinalizePrecommit(block)
+			fs.harness.finalize += time.Since(tFin)
+			if finErr != nil {
 				return block.Height(), err
 			}
 		}
@@ -129,15 +152,20 @@ func (fs *fullSync) processBatch(batch *batch, attemptNum int) error {
 	for i := batch.from; i <= batch.to; i++ {
 		timeout := time.After(time.Second * 20)
 
+		tWait := time.Now()
 		select {
 		case block := <-batch.headers:
+			fs.harness.headerWait += time.Since(tWait)
 			if block == nil {
 				err := errors.New("failed to load block header")
 				fs.pm.BanPeer(batch.p.id, err)
 				return err
 			}
 			batch.p.resetTimeouts()
-			if err := fs.validateHeader(block, batch.p); err != nil {
+			tVal := time.Now()
+			valErr := fs.validateHeader(block, batch.p)
+			fs.harness.validateHdr += time.Since(tVal)
+			if err := valErr; err != nil {
 				if err == blockchain.ParentHashIsInvalid {
 					fs.potentialForkedPeers.Add(batch.p.id)
 					return err
@@ -161,6 +189,13 @@ func (fs *fullSync) processBatch(batch *batch, attemptNum int) error {
 		}
 	}
 	fs.log.Info("Finish process batch", "from", batch.from, "to", batch.to)
+	h := fs.harness
+	fs.log.Info("HARNESS: batch timing", "from", batch.from, "to", batch.to,
+		"blocks", h.blocks, "nonEmpty", h.nonEmpty, "txs", h.txs,
+		"headerWaitMs", h.headerWait.Milliseconds(), "validateHdrMs", h.validateHdr.Milliseconds(), "getBodyMs", h.getBody.Milliseconds(),
+		"addBlockMs", h.addBlock.Milliseconds(), "writeCertMs", h.writeCert.Milliseconds(),
+		"finalizeMs", h.finalize.Milliseconds())
+	fs.harness = syncTiming{}
 	return nil
 }
 

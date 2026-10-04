@@ -477,7 +477,8 @@ func validateSubmitLongAnswersTx(appState *appstate.AppState, tx *types.Transact
 		return nil
 	}
 
-	if types.IsValidLongSessionAnswers(tx) {
+	seed := appState.State.FlipWordsSeed()
+	if types.IsValidLongSessionAnswers(tx, seed) {
 		return nil
 	}
 
@@ -487,7 +488,6 @@ func validateSubmitLongAnswersTx(appState *appstate.AppState, tx *types.Transact
 		return InvalidPayload
 	}
 
-	seed := appState.State.FlipWordsSeed()
 	rawPubKey, _ := types.SenderPubKey(tx)
 	pubKey, err := crypto.UnmarshalPubkey(rawPubKey)
 	if err != nil {
@@ -502,7 +502,7 @@ func validateSubmitLongAnswersTx(appState *appstate.AppState, tx *types.Transact
 		return err
 	}
 
-	types.MarkAsValidLongSessionAnswers(tx)
+	types.MarkAsValidLongSessionAnswers(tx, seed)
 
 	return nil
 }
