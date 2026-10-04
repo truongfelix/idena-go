@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/google/tink/go/subtle/random"
 	ds "github.com/ipfs/go-datastore"
@@ -36,7 +35,10 @@ func TestLeveldsDiskSpecMatchesKubo(t *testing.T) {
 }
 
 func TestLeveldsWriteBuffer(t *testing.T) {
-	// 6 MiB of new data: one memtable flush with the default 4 MiB buffer, none with 16 MiB.
+	// 10 MiB of new data: two memtable rotations or more with the default 4 MiB buffer, none with 16 MiB. goleveldb
+	// asks for the flush of a rotated memtable without waiting, and the request is lost when its compaction goroutine
+	// is not ready for it (seen on a busy CI runner); the next rotation flushes it before going on. So two
+	// rotations leave a level-0 table when the writes return, whatever the scheduling.
 	for _, tc := range []struct {
 		writeBufferMiB int
 		flushed        bool
@@ -50,7 +52,7 @@ func TestLeveldsWriteBuffer(t *testing.T) {
 		db := store.(*levelds.Datastore).DB
 
 		ctx := context.Background()
-		for i := 0; i < 6; i++ {
+		for i := 0; i < 10; i++ {
 			batch, err := store.(ds.Batching).Batch(ctx)
 			require.NoError(t, err)
 			for j := 0; j < 1024; j++ {
@@ -59,16 +61,12 @@ func TestLeveldsWriteBuffer(t *testing.T) {
 			require.NoError(t, batch.Commit(ctx))
 		}
 
-		tables := func() string {
-			value, err := db.GetProperty("leveldb.num-files-at-level0")
-			require.NoError(t, err)
-			return value
-		}
+		tables, err := db.GetProperty("leveldb.num-files-at-level0")
+		require.NoError(t, err)
 		if tc.flushed {
-			require.Eventually(t, func() bool { return tables() != "0" }, 10*time.Second, 50*time.Millisecond)
+			require.NotEqual(t, "0", tables)
 		} else {
-			time.Sleep(500 * time.Millisecond)
-			require.Equal(t, "0", tables())
+			require.Equal(t, "0", tables)
 		}
 		require.NoError(t, store.Close())
 	}
