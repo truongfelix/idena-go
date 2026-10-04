@@ -195,7 +195,7 @@ func NewNodeWithInjections(config *config.Config, bus eventbus.Bus, statsCollect
 	}
 
 	bus.Publish(&events.DatabaseInitEvent{})
-	db, err := OpenDatabaseWithWriteBuffer(config.DataDir, "idenachain", 16, 16, config.DatabaseWriteBufferMiB(), true)
+	db, err := openChainDatabase(config, true)
 	bus.Publish(&events.DatabaseInitCompletedEvent{})
 
 	if err != nil {
@@ -465,6 +465,11 @@ func (node *Node) stopHTTP() {
 		node.httpServer.Close()
 		node.httpServer = nil
 	}
+}
+
+// openChainDatabase opens the chain database of cfg.DataDir as the node does.
+func openChainDatabase(cfg *config.Config, compact bool) (db.DB, error) {
+	return OpenDatabaseWithWriteBuffer(cfg.DataDir, "idenachain", 16, 16, cfg.DatabaseWriteBufferMiB(), compact)
 }
 
 func OpenDatabase(datadir string, name string, cache int, handles int, compact bool) (db.DB, error) {
