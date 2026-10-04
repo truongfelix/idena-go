@@ -350,3 +350,71 @@ func TestFastSyncResumesAtHeaderWithInvalidIdentityDiff(t *testing.T) {
 	require.True(t, st.fs.pm.connManager.bannedPeers.Contains(testServingPeer))
 	require.Equal(t, first.Hash(), st.fs.chain.PreliminaryHead.Hash())
 }
+
+// While a fast sync waits for a snapshot, a full sync applies the blocks its headers hold: the headers stay,
+// so that the fast sync can go on from them when a snapshot appears, until the full sync reaches their top.
+func TestFullSyncKeepsFastSyncHeadersUntilItReachesThem(t *testing.T) {
+	st := newFastSyncTest(t)
+	first := st.generateBlock(0)
+	second := st.generateBlock(0)
+	last := st.generateBlock(0)
+	require.NoError(t, st.fs.processBatch(st.batchOf(st.blocks()), 1))
+	chain := st.fs.chain
+	chain.WritePreliminaryConsensusVersion(uint32(config.ConsensusV12))
+
+	for _, header := range []*types.Header{first, second} {
+		require.NoError(t, chain.AddBlock(st.source.GetBlock(header.Hash()), nil, collector.NewStatsCollector()))
+		require.Equal(t, header.Hash(), chain.Head.Hash())
+		require.Equal(t, last.Hash(), chain.PreliminaryHead.Hash())
+		require.Equal(t, last.Hash(), chain.ReadPreliminaryHead().Hash())
+		require.Equal(t, uint32(config.ConsensusV12), chain.ReadPreliminaryConsensusVersion())
+		require.True(t, st.fs.appState.IdentityState.HasPreliminary())
+	}
+
+	// The full sync reaches the top of the headers: they are dropped with the consensus version recorded
+	// from them and the fast sync's copy of the identity state.
+	require.NoError(t, chain.AddBlock(st.source.GetBlock(last.Hash()), nil, collector.NewStatsCollector()))
+	require.Equal(t, last.Hash(), chain.Head.Hash())
+	require.Nil(t, chain.PreliminaryHead)
+	require.Nil(t, chain.ReadPreliminaryHead())
+	require.Zero(t, chain.ReadPreliminaryConsensusVersion())
+	require.False(t, st.fs.appState.IdentityState.HasPreliminary())
+}
+
+// A block other than the one the headers hold at its height (another fork) drops them: they no longer
+// continue the chain.
+func TestFullSyncDropsFastSyncHeadersOnAnotherBlock(t *testing.T) {
+	st := newFastSyncTest(t)
+	first := st.generateBlock(0)
+	st.generateBlock(0)
+	require.NoError(t, st.fs.processBatch(st.batchOf(st.blocks()), 1))
+	chain := st.fs.chain
+
+	other := chain.GenerateEmptyBlock()
+	require.Equal(t, first.Height(), other.Height())
+	require.NotEqual(t, first.Hash(), other.Hash())
+	require.NoError(t, chain.AddBlock(other, nil, collector.NewStatsCollector()))
+
+	require.Nil(t, chain.PreliminaryHead)
+	require.Nil(t, chain.ReadPreliminaryHead())
+	require.False(t, st.fs.appState.IdentityState.HasPreliminary())
+}
+
+// After a full sync applied blocks of the kept headers, the fast sync goes on from the headers: its identity
+// state, which the full sync does not touch, is that of their top.
+func TestFastSyncResumesFromHeadersKeptByFullSync(t *testing.T) {
+	st := newFastSyncTest(t)
+	first := st.generateBlock(0)
+	last := st.generateBlock(0)
+	require.NoError(t, st.fs.processBatch(st.batchOf(st.blocks()), 1))
+	chain := st.fs.chain
+	require.NoError(t, chain.AddBlock(st.source.GetBlock(first.Hash()), nil, collector.NewStatsCollector()))
+
+	resumed := *st.fs
+	resumed.identityStateDB = nil
+	from, err := resumed.preConsuming(chain.Head)
+
+	require.NoError(t, err)
+	require.Equal(t, last.Height()+1, from)
+	require.Equal(t, last.IdentityRoot(), resumed.identityStateDB.Root())
+}

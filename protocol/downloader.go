@@ -69,8 +69,8 @@ type Downloader struct {
 	keyStore             *keystore.KeyStore
 	subManager           *subscriptions.Manager
 	upgrader             *upgrade.Upgrader
-	// failedSnapshots holds the heights of the snapshots that the fast sync of the kept headers gave up on.
-	failedSnapshots map[uint64]struct{}
+	// fullSyncNext makes the next pass a full sync: the last fast sync got its headers but no snapshot.
+	fullSyncNext bool
 }
 
 func (d *Downloader) IsSyncing() bool {
@@ -171,10 +171,6 @@ func (d *Downloader) Load() {
 	head := d.chain.Head
 
 	applier, toHeight := d.createBlockApplier()
-	if applier == nil {
-		time.Sleep(waitForSnapshotDelay)
-		return
-	}
 
 	var from uint64
 	var err error
@@ -189,34 +185,13 @@ func (d *Downloader) Load() {
 	completed := make(chan interface{})
 	go d.consumeBlocks(applier, term, completed)
 
-	knownHeights := d.pm.GetKnownHeights()
-loop:
-	for from <= toHeight && len(knownHeights) > 0 {
-		for peer, height := range knownHeights {
-			if height < from {
-				delete(knownHeights, peer)
-				continue
-			}
-			to := math.Min(from+applier.batchSize(), math.Min(toHeight, height))
-			if batch, err := d.pm.GetBlocksRange(peer, from, to); err != nil {
-				delete(knownHeights, peer)
-				continue
-			} else {
-				select {
-				case d.batches <- batch:
-				case <-term:
-					break loop
-				}
-			}
-			from = to + 1
-		}
-	}
+	requestBatches(d.pm, d.pm.GetKnownHeights(), from, toHeight, applier.batchSize(), d.batches, term)
 	d.log.Info("All blocks were requested. Wait for applying of blocks")
 	close(completed)
 	<-term
 	if err := applier.postConsuming(); err != nil {
 		d.log.Error("Post consuming error", "err", err)
-		d.recordFailedSnapshot(applier)
+		d.afterFailedPass(applier)
 		time.Sleep(5 * time.Second)
 	}
 }
@@ -292,90 +267,69 @@ type syncPlan int
 const (
 	planFullSync syncPlan = iota
 	planFastSync
-	// planWaitForSnapshot: a fast sync has downloaded headers well above the chain, but no snapshot
-	// can complete it now.
-	planWaitForSnapshot
 )
 
-// waitForSnapshotDelay is the pause before the downloader looks for a snapshot again.
-var waitForSnapshotDelay = time.Minute
-
-// maxFailedSnapshots is how many snapshots the fast sync of the kept headers may give up on before the
-// downloader drops the headers and uses full sync.
-const maxFailedSnapshots = 3
+// fullSyncSlice is how many blocks one full sync pass applies while the headers of a fast sync are kept above
+// the chain: between passes the downloader looks for a snapshot that lets the fast sync go on from them.
+const fullSyncSlice = 1000
 
 func (d *Downloader) createBlockApplier() (loader blockApplier, toHeight uint64) {
 	head := d.chain.Head.Height()
 	var manifest *snapshot.Manifest
-	if d.cfg.Sync.FastSync && d.top-head >= d.cfg.Sync.ForceFullSync {
+	if d.fullSyncNext {
+		d.fullSyncNext = false
+	} else if d.cfg.Sync.FastSync && d.top-head >= d.cfg.Sync.ForceFullSync {
 		manifest = d.getBestManifest()
 	}
 
-	failedSnapshots := d.failedSnapshotCount()
-	switch chooseSyncPlan(d.cfg.Sync, head, d.top, d.chain.PreliminaryHead, manifest, failedSnapshots) {
-	case planFastSync:
+	plan, toHeight := chooseSyncPlan(d.cfg.Sync, head, d.top, d.chain.PreliminaryHead, manifest)
+	if plan == planFastSync {
 		d.log.Info("Fast sync will be used")
-		return NewFastSync(d.pm, d.log, d.chain, d.ipfs, d.appState, d.potentialForkedPeers, manifest, d.sm, d.bus, d.secStore.GetAddress(), d.keyStore, d.subManager, d.upgrader), manifest.Height
-	case planWaitForSnapshot:
-		d.log.Info("No snapshot can complete the fast sync: keeping its headers and waiting for a newer snapshot",
-			"head", head, "headers", d.chain.PreliminaryHead.Height(), "failedSnapshots", failedSnapshots, "max", maxFailedSnapshots)
-		return nil, 0
-	default:
-		if failedSnapshots >= maxFailedSnapshots {
-			d.log.Warn("The fast sync gave up on too many snapshots: dropping its headers", "failedSnapshots", failedSnapshots)
-		}
-		d.log.Info("Full sync will be used")
-		top := d.top
-		return NewFullSync(d.pm, d.log, d.chain, d.ipfs, d.appState, d.potentialForkedPeers, top, d.statsCollector), top
+		return NewFastSync(d.pm, d.log, d.chain, d.ipfs, d.appState, d.potentialForkedPeers, manifest, d.sm, d.bus, d.secStore.GetAddress(), d.keyStore, d.subManager, d.upgrader), toHeight
 	}
+	if d.chain.PreliminaryHead != nil && d.chain.PreliminaryHead.Height() > head {
+		d.log.Info("Full sync will be used, keeping the fast sync headers", "to", toHeight, "headers", d.chain.PreliminaryHead.Height())
+	} else {
+		d.log.Info("Full sync will be used")
+	}
+	return NewFullSync(d.pm, d.log, d.chain, d.ipfs, d.appState, d.potentialForkedPeers, toHeight, d.statsCollector), toHeight
 }
 
-// chooseSyncPlan picks fast sync when a snapshot lies far enough above the chain, and full sync
-// otherwise, except while a fast sync is under way (its headers are ForceFullSync blocks or more above
-// the chain) and no snapshot is usable, for example because its download timed out: full sync would
-// drop those headers at its first block (AddBlock removes the preliminary head) and then apply every
-// block from far behind. The downloader waits for the next snapshot instead, one per SnapshotRange
-// blocks, and the fast sync then goes on from its headers. After maxFailedSnapshots failed snapshots it
-// gives the headers up and uses full sync, so that a node whose snapshots keep failing still syncs.
+// chooseSyncPlan picks fast sync when a snapshot lies far enough above the chain, and full sync otherwise.
+// A snapshot below the headers of an unfinished fast sync is not usable: the fast sync goes on from its
+// headers, above the snapshot.
 //
-// A snapshot below the kept headers is not usable: the fast sync goes on from its headers, above the
-// snapshot, and gives up without counting a timeout for it.
-func chooseSyncPlan(cfg *config.SyncConfig, head, top uint64, preliminaryHead *types.Header, manifest *snapshot.Manifest, failedSnapshots int) syncPlan {
+// While those headers are kept above the chain, a full sync goes at most fullSyncSlice blocks per pass. It
+// keeps the headers while it applies the blocks they hold (AddBlock), so that the fast sync can go on from
+// them when a snapshot above them appears, for example after its snapshot could not be downloaded. The node
+// never waits for a snapshot: a node a few hundred blocks behind catches up by full sync, and a node millions
+// of blocks behind full syncs until the next snapshot takes over.
+func chooseSyncPlan(cfg *config.SyncConfig, head, top uint64, preliminaryHead *types.Header, manifest *snapshot.Manifest) (syncPlan, uint64) {
 	if !cfg.FastSync || top-head < cfg.ForceFullSync {
-		return planFullSync
+		return planFullSync, top
 	}
 	if manifest != nil && manifest.Height >= head && manifest.Height-head >= cfg.ForceFullSync &&
 		(preliminaryHead == nil || manifest.Height >= preliminaryHead.Height()) {
-		return planFastSync
+		return planFastSync, manifest.Height
 	}
-	if preliminaryHead != nil && preliminaryHead.Height() >= head+cfg.ForceFullSync && failedSnapshots < maxFailedSnapshots {
-		return planWaitForSnapshot
+	if preliminaryHead != nil && preliminaryHead.Height() > head {
+		return planFullSync, math.Min(top, head+fullSyncSlice)
 	}
-	return planFullSync
+	return planFullSync, top
 }
 
-// failedSnapshotCount is how many snapshots the fast sync of the kept headers gave up on. The count
-// starts again when no headers are kept: the fast sync completed, or a full sync dropped them.
-func (d *Downloader) failedSnapshotCount() int {
-	if d.chain.PreliminaryHead == nil {
-		d.failedSnapshots = nil
+// afterFailedPass makes the next pass a full sync after a fast sync that got all the headers it could but no
+// snapshot: the snapshot could not be downloaded or loaded, or it lies above the top of the chain. Trying the
+// same fast sync again at once would leave the chain where it is for as long as no snapshot loads. A fast sync
+// that failed before its headers were complete is tried again.
+func (d *Downloader) afterFailedPass(applier blockApplier) {
+	if fs, ok := applier.(*fastSync); ok {
+		d.fullSyncNext = headersComplete(d.chain.PreliminaryHead, fs.manifest.Height, d.top)
 	}
-	return len(d.failedSnapshots)
 }
 
-// recordFailedSnapshot counts the snapshot of a fast sync that gave up on it: its manifest is now
-// invalid (MaxManifestTimeouts download timeouts, or a snapshot that cannot be loaded). A snapshot
-// counts once, whatever the number of its manifests: nodes of different versions can announce different
-// CIDs for the same height.
-func (d *Downloader) recordFailedSnapshot(applier blockApplier) {
-	fs, ok := applier.(*fastSync)
-	if !ok || !d.sm.IsInvalidManifest(fs.manifest.CidV2) {
-		return
-	}
-	if d.failedSnapshots == nil {
-		d.failedSnapshots = map[uint64]struct{}{}
-	}
-	d.failedSnapshots[fs.manifest.Height] = struct{}{}
+func headersComplete(preliminaryHead *types.Header, manifestHeight, top uint64) bool {
+	return preliminaryHead != nil && preliminaryHead.Height() >= math.Min(manifestHeight, top)
 }
 
 func (d *Downloader) getBestManifest() *snapshot.Manifest {
@@ -421,6 +375,41 @@ func (d *Downloader) stopSync() {
 func (d *Downloader) BanPeer(peerId peer.ID, reason error) {
 	if d.pm != nil {
 		d.pm.BanPeer(peerId, reason)
+	}
+}
+
+// blocksRangeRequester requests a range of blocks from a peer (IdenaGossipHandler).
+type blocksRangeRequester interface {
+	GetBlocksRange(peerId peer.ID, from uint64, to uint64) (*batch, error)
+}
+
+// requestBatches requests the blocks from..toHeight in batches from the peers that know them, in turn, and sends
+// the batches on until term is closed.
+func requestBatches(pm blocksRangeRequester, knownHeights map[peer.ID]uint64, from, toHeight, batchSize uint64, batches chan<- *batch, term <-chan interface{}) {
+	for from <= toHeight && len(knownHeights) > 0 {
+		for peer, height := range knownHeights {
+			// The previous batch reached toHeight. The peers know blocks above it when toHeight is below the top
+			// (a full sync slice, the snapshot of a fast sync): a request from them would be for an empty range.
+			if from > toHeight {
+				return
+			}
+			if height < from {
+				delete(knownHeights, peer)
+				continue
+			}
+			to := math.Min(from+batchSize, math.Min(toHeight, height))
+			if batch, err := pm.GetBlocksRange(peer, from, to); err != nil {
+				delete(knownHeights, peer)
+				continue
+			} else {
+				select {
+				case batches <- batch:
+				case <-term:
+					return
+				}
+			}
+			from = to + 1
+		}
 	}
 }
 

@@ -440,6 +440,8 @@ func (chain *Blockchain) AddBlock(block *types.Block, checkState *appstate.AppSt
 	if err := validateBlockParentHash(block.Header, chain.Head); err != nil {
 		return err
 	}
+	// Read before insertBlock replaces the stored header of this height.
+	keepPreliminary := chain.keepsPreliminaryHeaders(block)
 	statsCollector.EnableCollecting()
 	defer statsCollector.CompleteCollecting()
 	if blockInsertionResult, err := chain.ValidateBlock(block, checkState, statsCollector, false); err != nil {
@@ -488,7 +490,9 @@ func (chain *Blockchain) AddBlock(block *types.Block, checkState *appstate.AppSt
 			shardId, _ := chain.CoinbaseShard()
 			log.Info("Coinbase shard", "shardId", shardId)
 		}
-		chain.RemovePreliminaryHead(nil)
+		if !keepPreliminary {
+			chain.dropPreliminaryHeaders()
+		}
 		return nil
 	}
 }
@@ -2929,6 +2933,27 @@ func (chain *Blockchain) WriteIdentityStateDiff(height uint64, diff *state.Ident
 		b, _ := diff.ToBytes()
 		chain.repo.WriteIdentityStateDiff(height, b)
 	}
+}
+
+// keepsPreliminaryHeaders reports whether the headers of an unfinished fast sync stay when the block is added:
+// they do while the block is the one they hold at its height, below their top. A full sync can then run while
+// the fast sync waits for a snapshot, and the fast sync goes on from its headers when one appears.
+func (chain *Blockchain) keepsPreliminaryHeaders(block *types.Block) bool {
+	return chain.PreliminaryHead != nil && block.Height() < chain.PreliminaryHead.Height() &&
+		chain.repo.ReadCanonicalHash(block.Height()) == block.Hash()
+}
+
+// dropPreliminaryHeaders drops the headers of an unfinished fast sync, with the consensus version and the
+// intermediate genesis recorded from them (a later fast sync, from other headers, must not switch to those) and
+// its copy of the identity state, which nothing would remove otherwise.
+func (chain *Blockchain) dropPreliminaryHeaders() {
+	if chain.PreliminaryHead == nil {
+		return
+	}
+	chain.RemovePreliminaryHead(nil)
+	chain.RemovePreliminaryConsensusVersion()
+	chain.RemovePreliminaryIntermediateGenesis()
+	chain.appState.IdentityState.DropPreliminary()
 }
 
 func (chain *Blockchain) RemovePreliminaryHead(batch dbm.Batch) {
