@@ -18,6 +18,7 @@ import (
 	"github.com/idena-network/idena-go/core/profile"
 	"github.com/idena-network/idena-go/core/state"
 	"github.com/idena-network/idena-go/crypto"
+	"github.com/idena-network/idena-go/stats/validationsummary"
 	"github.com/ipfs/go-cid"
 	"github.com/pkg/errors"
 	"github.com/shopspring/decimal"
@@ -30,11 +31,12 @@ type DnaApi struct {
 	ceremony       *ceremony.ValidationCeremony
 	appVersion     string
 	profileManager *profile.Manager
+	summaries      *validationsummary.Store
 }
 
 func NewDnaApi(baseApi *BaseApi, bc *blockchain.Blockchain, ceremony *ceremony.ValidationCeremony, appVersion string,
-	profileManager *profile.Manager) *DnaApi {
-	return &DnaApi{bc, baseApi, ceremony, appVersion, profileManager}
+	profileManager *profile.Manager, summaries *validationsummary.Store) *DnaApi {
+	return &DnaApi{bc, baseApi, ceremony, appVersion, profileManager, summaries}
 }
 
 type State struct {
@@ -354,6 +356,22 @@ func (api *DnaApi) Identities() []Identity {
 	})
 
 	return identities
+}
+
+// ValidationSummary returns what the validation ceremony of the epoch (default: the last one) did to the address, as
+// this node recorded it while applying the ceremony block: null when the node did not apply that block (it was
+// not running, fast-synced past it, or ran a version without the recording) or the epoch is older than the kept
+// ones (validationsummary.KeptEpochs).
+func (api *DnaApi) ValidationSummary(address common.Address, epoch *uint16) (*validationsummary.Summary, error) {
+	if epoch == nil {
+		current := api.baseApi.getReadonlyAppState().State.Epoch()
+		if current == 0 {
+			return nil, nil
+		}
+		last := current - 1
+		epoch = &last
+	}
+	return api.summaries.Get(*epoch, address)
 }
 
 func (api *DnaApi) Identity(address *common.Address) Identity {
