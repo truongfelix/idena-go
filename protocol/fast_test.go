@@ -390,7 +390,8 @@ func TestFullSyncDropsFastSyncHeadersOnAnotherBlock(t *testing.T) {
 	require.NoError(t, st.fs.processBatch(st.batchOf(st.blocks()), 1))
 	chain := st.fs.chain
 
-	other := chain.GenerateEmptyBlock()
+	// Proposed now: the source chain's block is from the test chain's start.
+	other := chain.ProposeBlock([]byte{}).Block
 	require.Equal(t, first.Height(), other.Height())
 	require.NotEqual(t, first.Hash(), other.Hash())
 	require.NoError(t, chain.AddBlock(other, nil, collector.NewStatsCollector()))
