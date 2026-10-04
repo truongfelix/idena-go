@@ -291,8 +291,24 @@ func TestApplyStoredConsensusVersionAfterAStopWithTwoJournals(t *testing.T) {
 	if n := journals(t, filepath.Join(datadir, "idenachain.db")); n != 2 {
 		t.Fatalf("journals = %d, want 2", n)
 	}
-	// The state that goleveldb's read-only open cannot read.
-	if ro, err := openDatabaseReadOnly(datadir, "idenachain"); err == nil {
+	// The state is the one that goleveldb's read-only open cannot read. Checked on a copy: the failed open leaves a
+	// journal open, which Windows cannot remove.
+	control, err := os.MkdirTemp("", "two-journals-control")
+	if err != nil {
+		t.Fatalf("MkdirTemp() error = %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(control) })
+	if err := os.Mkdir(filepath.Join(control, "idenachain.db"), 0755); err != nil {
+		t.Fatalf("Mkdir() error = %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Join(datadir, "idenachain.db"))
+	if err != nil {
+		t.Fatalf("ReadDir() error = %v", err)
+	}
+	for _, e := range entries {
+		copyFile(t, filepath.Join(datadir, "idenachain.db", e.Name()), filepath.Join(control, "idenachain.db", e.Name()))
+	}
+	if ro, err := openDatabaseReadOnly(control, "idenachain"); err == nil {
 		ro.Close()
 		t.Fatalf("read-only open of two journals succeeded: the test does not build the failing state")
 	}
