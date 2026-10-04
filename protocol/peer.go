@@ -583,3 +583,8 @@ func (p *protoPeer) Manifest() *snapshot.Manifest {
 	defer p.manifestLock.Unlock()
 	return p.manifest
 }
+
+// AppVersion is the node version the peer sent in the handshake (diagnostic branch only).
+func (p *protoPeer) AppVersion() string {
+	return p.appVersion
+}
