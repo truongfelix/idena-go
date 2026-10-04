@@ -29,6 +29,7 @@ import (
 	"github.com/idena-network/idena-go/secstore"
 	state2 "github.com/idena-network/idena-go/state"
 	"github.com/idena-network/idena-go/stats/collector"
+	"github.com/idena-network/idena-go/stats/validationsummary"
 	"github.com/idena-network/idena-go/subscriptions"
 	"github.com/idena-network/idena-go/vm"
 	"github.com/pkg/errors"
@@ -75,6 +76,7 @@ type Node struct {
 	subManager      *subscriptions.Manager
 	upgrader        *upgrade.Upgrader
 	nodeState       *state2.NodeState
+	summaries       *validationsummary.Store
 }
 
 type NodeCtx struct {
@@ -223,6 +225,10 @@ func NewNodeWithInjections(config *config.Config, bus eventbus.Bus, statsCollect
 		return nil, err
 	}
 
+	// Every component gets the collector with the validation summaries recorded on the side (dna_validationSummary).
+	summaries := validationsummary.NewStore(db)
+	statsCollector = validationsummary.NewRecorder(statsCollector, summaries, appState, bus)
+
 	offlineDetector := blockchain.NewOfflineDetector(config, db, appState, secStore, bus)
 
 	upgrader := upgrade.NewUpgrader(config, appState, db)
@@ -281,6 +287,7 @@ func NewNodeWithInjections(config *config.Config, bus eventbus.Bus, statsCollect
 		subManager:      subManager,
 		upgrader:        upgrader,
 		nodeState:       nodeState,
+		summaries:       summaries,
 		httpListener:    httpListener,
 		httpHandler:     httpHandler,
 		httpServer:      httpServer,
@@ -556,7 +563,7 @@ func (node *Node) apis() []rpc.API {
 		{
 			Namespace: "dna",
 			Version:   "1.0",
-			Service:   api.NewDnaApi(baseApi, node.blockchain, node.ceremony, node.appVersion, node.profileManager),
+			Service:   api.NewDnaApi(baseApi, node.blockchain, node.ceremony, node.appVersion, node.profileManager, node.summaries),
 			Public:    true,
 		},
 		{
