@@ -132,6 +132,10 @@ var (
 		Name:  "dbwritebuffer",
 		Usage: "Chain database write buffer in MiB (default 4); a bigger buffer writes much less to disk and costs about 2-4 times the added buffer in RAM",
 	}
+	IpfsWriteBufferFlag = cli.IntFlag{
+		Name:  "ipfswritebuffer",
+		Usage: "IPFS datastore write buffer in MiB (default 4); a bigger buffer writes much less to disk on a node reachable from the internet (DHT records) and costs about 2 times the added buffer in RAM",
+	}
 	ProfileFlag = cli.StringFlag{
 		Name:  "profile",
 		Usage: "Configuration profile",

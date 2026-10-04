@@ -18,6 +18,12 @@ type IpfsConfig struct {
 	FlipPinThreshold   float32
 	PublishPeers       bool
 	Gc                 IpfsGcConfig
+	// DatastoreWriteBufferMiB is the write buffer (memtable) of the IPFS repo's LevelDB datastore in MiB; 0 keeps
+	// the default (4 MiB). A node reachable from the internet is a DHT server and stores the provider records
+	// of other nodes there, under random keys: every flushed level-0 table rewrites the whole of level 1, so a
+	// bigger buffer cuts these writes. It costs about 2 times the added buffer in memory (the memtable and
+	// the one being flushed) and applies when the datastore is opened: a change takes a restart.
+	DatastoreWriteBufferMiB int
 }
 
 type IpfsGcConfig struct {

@@ -98,6 +98,7 @@ To connect to the Idena mainnet, run the executable without parameters.
 * `--ipfsbootnode` Set custom bootstrap node
 * `--fast` Use fast sync (default `true`)
 * `--dbwritebuffer` Chain database write buffer in MiB (default `4`): a bigger buffer writes much less to disk (16 MiB: 40-75% less in mainnet replays) and costs about 2-4 times the added buffer in RAM; takes effect at the next start (config file: `"Database": {"WriteBufferMiB": 16}`)
+* `--ipfswritebuffer` IPFS datastore write buffer in MiB (default `4`): a node reachable from the internet is a DHT server and stores the provider records of other nodes in its IPFS LevelDB, where each flush at 4 MiB rewrites about 100 MiB (5-6 GiB a day on a phone); a bigger buffer cuts these writes and costs about 2 times the added buffer in RAM; takes effect at the next start (config file: `"IpfsConf": {"DatastoreWriteBufferMiB": 16}`)
 * `--verbosity` Log verbosity (default `3` - `Info`)
 * `--nodiscovery` Do not discover another nodes (default `false`)
 * `--profile=lowpower` Reduce bandwidth usage

@@ -412,6 +412,9 @@ func applyIpfsFlags(ctx *cli.Context, cfg *Config) {
 	if ctx.IsSet(IpfsBootNodeFlag.Name) {
 		cfg.IpfsConf.BootNodes = []string{ctx.String(IpfsBootNodeFlag.Name)}
 	}
+	if ctx.IsSet(IpfsWriteBufferFlag.Name) {
+		cfg.IpfsConf.DatastoreWriteBufferMiB = ctx.Int(IpfsWriteBufferFlag.Name)
+	}
 }
 
 func validateConfig(cfg *Config) error {
@@ -420,6 +423,9 @@ func validateConfig(cfg *Config) error {
 	}
 	if cfg.IpfsConf == nil {
 		return nil
+	}
+	if err := validateIpfsDatastoreWriteBuffer(cfg.IpfsConf.DatastoreWriteBufferMiB); err != nil {
+		return err
 	}
 	return validateIpfsRouting(cfg.IpfsConf.Routing)
 }

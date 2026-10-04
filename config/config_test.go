@@ -307,6 +307,7 @@ func newTestContext(t *testing.T) *cli.Context {
 		IpfsRoutingFlag,
 		ProfileFlag,
 		DbWriteBufferFlag,
+		IpfsWriteBufferFlag,
 	}
 	flagSet := flag.NewFlagSet("test", flag.ContinueOnError)
 	for _, f := range app.Flags {
@@ -350,4 +351,43 @@ func TestMakeConfigRejectsInvalidDatabaseWriteBuffer(t *testing.T) {
 
 		require.ErrorContains(t, err, "invalid Database.WriteBufferMiB")
 	}
+}
+
+func TestIpfsDatastoreWriteBufferDefaultsToZero(t *testing.T) {
+	cfg := getDefaultConfig(DefaultDataDir)
+	require.Zero(t, cfg.IpfsConf.DatastoreWriteBufferMiB)
+}
+
+func TestApplyIpfsFlagsSetsDatastoreWriteBuffer(t *testing.T) {
+	cfg := getDefaultConfig(DefaultDataDir)
+	ctx := newTestContext(t)
+
+	require.NoError(t, ctx.Set(IpfsWriteBufferFlag.Name, "16"))
+	applyIpfsFlags(ctx, cfg)
+
+	require.Equal(t, 16, cfg.IpfsConf.DatastoreWriteBufferMiB)
+}
+
+func TestMakeMobileConfigReadsIpfsDatastoreWriteBuffer(t *testing.T) {
+	cfg, err := MakeMobileConfig(t.TempDir(), `{"IpfsConf":{"Profile":"","DatastoreWriteBufferMiB":32}}`)
+	require.NoError(t, err)
+	require.Equal(t, 32, cfg.IpfsConf.DatastoreWriteBufferMiB)
+
+	cfg, err = MakeMobileConfig(t.TempDir(), `{"IpfsConf":{"Profile":""}}`)
+	require.NoError(t, err)
+	require.Zero(t, cfg.IpfsConf.DatastoreWriteBufferMiB)
+}
+
+func TestMakeConfigRejectsInvalidIpfsDatastoreWriteBuffer(t *testing.T) {
+	for _, value := range []string{"-1", "257"} {
+		ctx := newTestContext(t)
+		require.NoError(t, ctx.Set(IpfsWriteBufferFlag.Name, value))
+
+		_, err := MakeConfig(ctx, func(cfg *Config) {})
+
+		require.ErrorContains(t, err, "invalid IpfsConf.DatastoreWriteBufferMiB")
+	}
+
+	_, err := MakeMobileConfig(t.TempDir(), `{"IpfsConf":{"DatastoreWriteBufferMiB":300}}`)
+	require.ErrorContains(t, err, "invalid IpfsConf.DatastoreWriteBufferMiB")
 }
