@@ -61,7 +61,8 @@ type IdenaGossipHandler struct {
 	incomeBatches       *sync.Map
 	batchedLock         sync.Mutex
 	bus                 eventbus.Bus
-	wrongTime           bool
+	wrongTime           atomic.Bool
+	timeDrift           atomic.Int64
 	appVersion          string
 
 	log              log.Logger
@@ -231,9 +232,16 @@ func (h *IdenaGossipHandler) background() {
 	}
 }
 
+// checkTime measures the clock drift once a minute, for the wrong-time flag and
+// for the consensus engine's time alignment.
 func (h *IdenaGossipHandler) checkTime() {
+	var check clockCheck
 	for {
-		h.wrongTime = !checkClockDrift()
+		drift, err := SntpDrift(ntpChecks)
+		if err == nil {
+			h.timeDrift.Store(int64(drift))
+		}
+		h.wrongTime.Store(check.observe(drift, err))
 		time.Sleep(time.Minute)
 	}
 }
@@ -1116,7 +1124,13 @@ func (h *IdenaGossipHandler) AddPeer(url string) error {
 }
 
 func (h *IdenaGossipHandler) WrongTime() bool {
-	return h.wrongTime
+	return h.wrongTime.Load()
+}
+
+// TimeDrift returns the last clock drift measured against NTP, zero before the
+// first measurement.
+func (h *IdenaGossipHandler) TimeDrift() time.Duration {
+	return time.Duration(h.timeDrift.Load())
 }
 
 func (h *IdenaGossipHandler) IsConnected(id peer.ID) bool {
