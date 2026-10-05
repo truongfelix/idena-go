@@ -32,6 +32,9 @@ const SnapshotVersionV2 = SnapshotVersion(2)
 var (
 	InvalidManifestPrefix = []byte("im")
 	MaxManifestTimeouts   = byte(5)
+	// MaxSnapshotDownloadTime ends a snapshot download that still receives data: the idle timeout alone lets a
+	// download that trickles hold the sync for as long as it trickles.
+	MaxSnapshotDownloadTime = 20 * time.Minute
 )
 
 type SnapshotManager struct {
@@ -185,6 +188,7 @@ func (m *SnapshotManager) DownloadSnapshot(snapshot *snapshot.Manifest) (filePat
 
 	ctx, cancel := context.WithCancel(context.Background())
 
+	deadline := time.Now().Add(MaxSnapshotDownloadTime)
 	lastLoad := time.Now()
 	lock := sync.Mutex{}
 	logLevels := []float32{0.15, 0.3, 0.5, 0.75}
@@ -220,7 +224,7 @@ func (m *SnapshotManager) DownloadSnapshot(snapshot *snapshot.Manifest) (filePat
 				lock.Lock()
 				idleDuration := time.Now().Sub(lastLoad)
 				lock.Unlock()
-				if idleDuration > time.Minute {
+				if idleDuration > time.Minute || time.Now().After(deadline) {
 					cancel()
 				}
 
@@ -229,6 +233,9 @@ func (m *SnapshotManager) DownloadSnapshot(snapshot *snapshot.Manifest) (filePat
 	}()
 
 	wg.Wait()
+	if err := file.Close(); err != nil && loadToErr == nil {
+		loadToErr = err
+	}
 
 	if loadToErr == nil {
 		m.clearFs([]string{filePath})

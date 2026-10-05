@@ -69,8 +69,10 @@ type Downloader struct {
 	keyStore             *keystore.KeyStore
 	subManager           *subscriptions.Manager
 	upgrader             *upgrade.Upgrader
-	// fullSyncNext makes the next pass a full sync: the last fast sync got its headers but no snapshot.
+	// fullSyncNext makes the next pass a full sync slice: the last fast sync pass failed (afterFailedPass).
 	fullSyncNext bool
+	// manifestsAwaited is set once a pass of this sync has looked for snapshot manifests.
+	manifestsAwaited bool
 }
 
 func (d *Downloader) IsSyncing() bool {
@@ -270,24 +272,30 @@ const (
 )
 
 // fullSyncSlice is how many blocks one full sync pass applies while the headers of a fast sync are kept above
-// the chain: between passes the downloader looks for a snapshot that lets the fast sync go on from them.
+// the chain, and after a failed fast sync pass: between passes the downloader looks for a snapshot that lets
+// the fast sync go on.
 const fullSyncSlice = 1000
 
 func (d *Downloader) createBlockApplier() (loader blockApplier, toHeight uint64) {
 	head := d.chain.Head.Height()
+	headersKept := d.chain.PreliminaryHead != nil && d.chain.PreliminaryHead.Height() > head
+	afterFailedFastSync := d.fullSyncNext
+	d.fullSyncNext = false
 	var manifest *snapshot.Manifest
-	if d.fullSyncNext {
-		d.fullSyncNext = false
-	} else if d.cfg.Sync.FastSync && d.top-head >= d.cfg.Sync.ForceFullSync {
-		manifest = d.getBestManifest()
+	if !afterFailedFastSync && d.cfg.Sync.FastSync && d.top-head >= d.cfg.Sync.ForceFullSync {
+		// Peers announce their manifests when they connect. While headers are kept the sync is under way, and a
+		// pass waits for manifests only once per sync: the first pass after a restart can come before the
+		// announcements, and with no manifest announced a wait before every slice would hold each one.
+		manifest = d.getBestManifest(!headersKept || !d.manifestsAwaited)
+		d.manifestsAwaited = true
 	}
 
-	plan, toHeight := chooseSyncPlan(d.cfg.Sync, head, d.top, d.chain.PreliminaryHead, manifest)
+	plan, toHeight := chooseSyncPlan(d.cfg.Sync, head, d.top, d.chain.PreliminaryHead, manifest, afterFailedFastSync)
 	if plan == planFastSync {
 		d.log.Info("Fast sync will be used")
 		return NewFastSync(d.pm, d.log, d.chain, d.ipfs, d.appState, d.potentialForkedPeers, manifest, d.sm, d.bus, d.secStore.GetAddress(), d.keyStore, d.subManager, d.upgrader), toHeight
 	}
-	if d.chain.PreliminaryHead != nil && d.chain.PreliminaryHead.Height() > head {
+	if headersKept {
 		d.log.Info("Full sync will be used, keeping the fast sync headers", "to", toHeight, "headers", d.chain.PreliminaryHead.Height())
 	} else {
 		d.log.Info("Full sync will be used")
@@ -299,14 +307,17 @@ func (d *Downloader) createBlockApplier() (loader blockApplier, toHeight uint64)
 // A snapshot below the headers of an unfinished fast sync is not usable: the fast sync goes on from its
 // headers, above the snapshot.
 //
-// While those headers are kept above the chain, a full sync goes at most fullSyncSlice blocks per pass. It
-// keeps the headers while it applies the blocks they hold (AddBlock), so that the fast sync can go on from
-// them when a snapshot above them appears, for example after its snapshot could not be downloaded. The node
-// never waits for a snapshot: a node a few hundred blocks behind catches up by full sync, and a node millions
-// of blocks behind full syncs until the next snapshot takes over.
-func chooseSyncPlan(cfg *config.SyncConfig, head, top uint64, preliminaryHead *types.Header, manifest *snapshot.Manifest) (syncPlan, uint64) {
+// A full sync goes at most fullSyncSlice blocks per pass after a failed fast sync pass (afterFailedPass), and
+// while those headers are kept above the chain. It keeps the headers while it applies the blocks they hold
+// (AddBlock), so that the fast sync can go on from them when a snapshot above them appears, for example after
+// its snapshot could not be downloaded. The node never waits for a snapshot: a node a few hundred blocks behind
+// catches up by full sync, and a node millions of blocks behind full syncs until the next snapshot takes over.
+func chooseSyncPlan(cfg *config.SyncConfig, head, top uint64, preliminaryHead *types.Header, manifest *snapshot.Manifest, afterFailedFastSync bool) (syncPlan, uint64) {
 	if !cfg.FastSync || top-head < cfg.ForceFullSync {
 		return planFullSync, top
+	}
+	if afterFailedFastSync {
+		return planFullSync, math.Min(top, head+fullSyncSlice)
 	}
 	if manifest != nil && manifest.Height >= head && manifest.Height-head >= cfg.ForceFullSync &&
 		(preliminaryHead == nil || manifest.Height >= preliminaryHead.Height()) {
@@ -318,26 +329,22 @@ func chooseSyncPlan(cfg *config.SyncConfig, head, top uint64, preliminaryHead *t
 	return planFullSync, top
 }
 
-// afterFailedPass makes the next pass a full sync after a fast sync that got all the headers it could but no
-// snapshot: the snapshot could not be downloaded or loaded, or it lies above the top of the chain. Trying the
-// same fast sync again at once would leave the chain where it is for as long as no snapshot loads. A fast sync
-// that failed before its headers were complete is tried again.
+// afterFailedPass makes the next pass a full sync slice after any failed fast sync pass: its snapshot could not
+// be downloaded or loaded, or its headers stopped below the manifest. Whether the headers are complete cannot be
+// told from what peers announce (the manifest, their heights). Trying the fast sync again at once would leave the
+// chain where it is for as long as no snapshot loads.
 func (d *Downloader) afterFailedPass(applier blockApplier) {
-	if fs, ok := applier.(*fastSync); ok {
-		d.fullSyncNext = headersComplete(d.chain.PreliminaryHead, fs.manifest.Height, d.top)
+	if _, ok := applier.(*fastSync); ok {
+		d.fullSyncNext = true
 	}
 }
 
-func headersComplete(preliminaryHead *types.Header, manifestHeight, top uint64) bool {
-	return preliminaryHead != nil && preliminaryHead.Height() >= math.Min(manifestHeight, top)
-}
-
-func (d *Downloader) getBestManifest() *snapshot.Manifest {
+func (d *Downloader) getBestManifest(wait bool) *snapshot.Manifest {
 
 	manifests := d.pm.GetKnownManifests()
 
 	timeout := time.Second * 30
-	if len(manifests) == 0 {
+	if len(manifests) == 0 && wait {
 		d.log.Info("Wait for snapshot manifests")
 		for start := time.Now(); time.Since(start) < timeout && len(manifests) == 0; {
 			time.Sleep(2 * time.Second)
@@ -361,6 +368,9 @@ func (d *Downloader) getBestManifest() *snapshot.Manifest {
 
 func (d *Downloader) startSync() {
 	d.isSyncing = true
+	// A failed pass or a wait for manifests of an earlier sync does not carry over.
+	d.fullSyncNext = false
+	d.manifestsAwaited = false
 	d.chain.StartSync()
 	d.sm.StartSync()
 }
