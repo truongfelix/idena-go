@@ -187,8 +187,8 @@ func TestDownloaderSlicesAfterFastSyncWithoutHeaders(t *testing.T) {
 }
 
 // A restart keeps the fast sync headers, and the first pass can come before the peers announce their manifests:
-// it waits for them, and the fast sync goes on. The next passes of the sync do not wait: with no manifest
-// announced, a wait would hold every slice.
+// it waits for them, and the fast sync goes on. The next passes of the sync do not wait, with headers kept or
+// not: with no manifest announced, a wait would hold every pass.
 func TestDownloaderWaitsForManifestsOncePerSync(t *testing.T) {
 	chain, _, _, _ := blockchain.NewTestBlockchain(false, nil)
 	head := chain.Head.Height()
@@ -230,6 +230,14 @@ func TestDownloaderWaitsForManifestsOncePerSync(t *testing.T) {
 	require.Less(t, time.Since(started), 5*time.Second)
 	require.IsType(t, &fullSync{}, applier)
 	require.Equal(t, head+fullSyncSlice, to)
+
+	// The full sync has applied the headers (or a snapshot has loaded), and the chain is still behind: no wait.
+	chain.PreliminaryHead = nil
+	started = time.Now()
+	applier, to = d.createBlockApplier()
+	require.Less(t, time.Since(started), 5*time.Second)
+	require.IsType(t, &fullSync{}, applier)
+	require.Equal(t, head+5000, to)
 }
 
 // A failed fast sync pass, a wait for manifests or failed snapshots of an earlier sync do not carry over to the next sync.

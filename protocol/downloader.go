@@ -294,10 +294,11 @@ func (d *Downloader) createBlockApplier() (loader blockApplier, toHeight uint64)
 	var manifest *snapshot.Manifest
 	var announcers []peer.ID
 	if !afterFailedFastSync && d.cfg.Sync.FastSync && d.top-head >= d.cfg.Sync.ForceFullSync {
-		// Peers announce their manifests when they connect. While headers are kept the sync is under way, and a
-		// pass waits for manifests only once per sync: the first pass after a restart can come before the
-		// announcements, and with no manifest announced a wait before every slice would hold each one.
-		manifest, announcers = d.getBestManifest(!headersKept || !d.manifestsAwaited)
+		// Peers announce their manifests when they connect, so a pass waits for them only once per sync: the first
+		// pass after a start or a restart can come before the announcements. With no manifest announced, a wait
+		// before every later pass would hold each one: each slice while headers are kept, and the first pass
+		// after the full sync has applied them or a snapshot has loaded.
+		manifest, announcers = d.getBestManifest(!d.manifestsAwaited)
 		d.manifestsAwaited = true
 	}
 
