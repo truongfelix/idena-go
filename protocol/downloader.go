@@ -21,11 +21,16 @@ import (
 	"github.com/idena-network/idena-go/stats/collector"
 	"github.com/idena-network/idena-go/subscriptions"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"math/rand"
 	"time"
 )
 
 const (
 	MaxAttemptsCountPerBatch = 10
+	// MaxSnapshotHeightFailures is how many snapshots of one height a sync tries, whatever their CIDs: counted per
+	// CID alone, failures never end the attempts at a height whose manifests keep changing CID. The sync full
+	// syncs meanwhile, and goes on with the fast sync once a newer snapshot height is announced.
+	MaxSnapshotHeightFailures = 3
 )
 
 var (
@@ -73,6 +78,11 @@ type Downloader struct {
 	fullSyncNext bool
 	// manifestsAwaited is set once a pass of this sync has looked for snapshot manifests.
 	manifestsAwaited bool
+	// snapshotFailures counts, per snapshot height, the snapshots of this sync that failed, whatever their CIDs.
+	snapshotFailures map[uint64]int
+	// failedAnnouncers holds the peers that announced a snapshot that failed in this sync: their manifests no
+	// longer count in the vote.
+	failedAnnouncers map[peer.ID]struct{}
 }
 
 func (d *Downloader) IsSyncing() bool {
@@ -282,18 +292,21 @@ func (d *Downloader) createBlockApplier() (loader blockApplier, toHeight uint64)
 	afterFailedFastSync := d.fullSyncNext
 	d.fullSyncNext = false
 	var manifest *snapshot.Manifest
+	var announcers []peer.ID
 	if !afterFailedFastSync && d.cfg.Sync.FastSync && d.top-head >= d.cfg.Sync.ForceFullSync {
 		// Peers announce their manifests when they connect. While headers are kept the sync is under way, and a
 		// pass waits for manifests only once per sync: the first pass after a restart can come before the
 		// announcements, and with no manifest announced a wait before every slice would hold each one.
-		manifest = d.getBestManifest(!headersKept || !d.manifestsAwaited)
+		manifest, announcers = d.getBestManifest(!headersKept || !d.manifestsAwaited)
 		d.manifestsAwaited = true
 	}
 
 	plan, toHeight := chooseSyncPlan(d.cfg.Sync, head, d.top, d.chain.PreliminaryHead, manifest, afterFailedFastSync)
 	if plan == planFastSync {
 		d.log.Info("Fast sync will be used")
-		return NewFastSync(d.pm, d.log, d.chain, d.ipfs, d.appState, d.potentialForkedPeers, manifest, d.sm, d.bus, d.secStore.GetAddress(), d.keyStore, d.subManager, d.upgrader), toHeight
+		fs := NewFastSync(d.pm, d.log, d.chain, d.ipfs, d.appState, d.potentialForkedPeers, manifest, d.sm, d.bus, d.secStore.GetAddress(), d.keyStore, d.subManager, d.upgrader)
+		fs.announcers = announcers
+		return fs, toHeight
 	}
 	if headersKept {
 		d.log.Info("Full sync will be used, keeping the fast sync headers", "to", toHeight, "headers", d.chain.PreliminaryHead.Height())
@@ -333,13 +346,47 @@ func chooseSyncPlan(cfg *config.SyncConfig, head, top uint64, preliminaryHead *t
 // be downloaded or loaded, or its headers stopped below the manifest. Whether the headers are complete cannot be
 // told from what peers announce (the manifest, their heights). Trying the fast sync again at once would leave the
 // chain where it is for as long as no snapshot loads.
+//
+// A failed snapshot counts against its height, and the peers that announced it no longer count in the vote for
+// the rest of the sync: the next attempt goes to another snapshot of the height (chooseManifest).
 func (d *Downloader) afterFailedPass(applier blockApplier) {
-	if _, ok := applier.(*fastSync); ok {
-		d.fullSyncNext = true
+	fs, ok := applier.(*fastSync)
+	if !ok {
+		return
+	}
+	d.fullSyncNext = true
+	if fs.snapshotFailure == noSnapshotFailure {
+		return
+	}
+	if d.snapshotFailures == nil {
+		d.snapshotFailures = make(map[uint64]int)
+	}
+	if fs.snapshotFailure == noSnapshotAtHeight {
+		d.snapshotFailures[fs.manifest.Height] = MaxSnapshotHeightFailures
+	} else {
+		d.snapshotFailures[fs.manifest.Height]++
+	}
+	if d.failedAnnouncers == nil {
+		d.failedAnnouncers = make(map[peer.ID]struct{})
+	}
+	for _, p := range fs.announcers {
+		d.failedAnnouncers[p] = struct{}{}
 	}
 }
 
-func (d *Downloader) getBestManifest(wait bool) *snapshot.Manifest {
+// snapshotFailure is how a fast sync pass failed with its snapshot.
+type snapshotFailure int
+
+const (
+	// noSnapshotFailure: the pass did not try the snapshot (its headers stopped below the manifest), or it loaded.
+	noSnapshotFailure snapshotFailure = iota
+	// snapshotFailed: the snapshot could not be downloaded in time, or did not match the header's root.
+	snapshotFailed
+	// noSnapshotAtHeight: the header at the manifest's height has no Snapshot flag; no node makes a snapshot there.
+	noSnapshotAtHeight
+)
+
+func (d *Downloader) getBestManifest(wait bool) (*snapshot.Manifest, []peer.ID) {
 
 	manifests := d.pm.GetKnownManifests()
 
@@ -352,25 +399,109 @@ func (d *Downloader) getBestManifest(wait bool) *snapshot.Manifest {
 		}
 	}
 
-	var best *snapshot.Manifest
-	for _, m := range manifests {
-		if (best == nil || best.Height < m.Height) && !d.sm.IsInvalidManifest(m.CidV2) {
-			best = m
-		}
-	}
+	best, announcers := d.chooseManifest(manifests)
 	if best == nil {
 		d.log.Info("Snapshot manifest is not found")
 	} else {
-		d.log.Info("Found manifest", "height", best.Height)
+		d.log.Info("Found manifest", "height", best.Height, "peers", len(announcers))
 	}
-	return best
+	return best, announcers
+}
+
+// snapshotCandidate is one snapshot (a height and a CID) and the peers that announce it.
+type snapshotCandidate struct {
+	manifest   *snapshot.Manifest
+	announcers []peer.ID
+	// votes counts the announcers that have not announced a failed snapshot in this sync.
+	votes    int
+	timeouts byte
+}
+
+// chooseManifest picks the snapshot the next fast sync pass tries: the newest height, and at that height the CID
+// most peers announce. The CID is in no header, but nodes make byte-identical snapshots, so peers announce one CID
+// per height.
+//
+// The most announced CID can fail: a snapshot that is not served, or one made by nodes of another version. Each
+// failure moves the next attempt on:
+//   - the announcers of a failed snapshot no longer count in the vote for the rest of the sync, so peers whose
+//     snapshots keep failing do not come first again with another CID;
+//   - with equal votes, the CID with fewer failed downloads goes first, then the most announcers, then one at
+//     random, so that ties do not always favour the same CIDs;
+//   - a height is given up after MaxSnapshotHeightFailures failed snapshots, or at once when it has no Snapshot
+//     flag. The sync full syncs meanwhile, which needs no snapshot, and the next snapshot height starts afresh.
+//
+// A manifest above the top is skipped: no peer announces the blocks up to it, so the fast sync cannot get its
+// headers, and as the newest height it would be chosen over a usable snapshot pass after pass. A node announces
+// its own last snapshot, at most its height.
+func (d *Downloader) chooseManifest(manifests map[peer.ID]*snapshot.Manifest) (*snapshot.Manifest, []peer.ID) {
+	candidates := make(map[string]*snapshotCandidate)
+	for id, m := range manifests {
+		if m == nil || len(m.CidV2) == 0 || m.Height > d.top || d.snapshotFailures[m.Height] >= MaxSnapshotHeightFailures ||
+			d.sm.IsInvalidManifest(m.CidV2) {
+			continue
+		}
+		key := fmt.Sprintf("%d/%x", m.Height, m.CidV2)
+		c := candidates[key]
+		if c == nil {
+			c = &snapshotCandidate{manifest: m, timeouts: d.sm.ManifestTimeouts(m.CidV2)}
+			candidates[key] = c
+		}
+		c.announcers = append(c.announcers, id)
+		if _, ok := d.failedAnnouncers[id]; !ok {
+			c.votes++
+		}
+	}
+	var best []*snapshotCandidate
+	for _, c := range candidates {
+		if len(best) == 0 {
+			best = []*snapshotCandidate{c}
+			continue
+		}
+		switch compareSnapshotCandidates(c, best[0]) {
+		case 1:
+			best = []*snapshotCandidate{c}
+		case 0:
+			best = append(best, c)
+		}
+	}
+	if len(best) == 0 {
+		return nil, nil
+	}
+	chosen := best[rand.Intn(len(best))]
+	return chosen.manifest, chosen.announcers
+}
+
+// compareSnapshotCandidates returns 1 when a goes before b, -1 when b goes first, 0 when they are equal.
+func compareSnapshotCandidates(a, b *snapshotCandidate) int {
+	switch {
+	case a.manifest.Height != b.manifest.Height:
+		return compareUint(a.manifest.Height, b.manifest.Height)
+	case a.votes != b.votes:
+		return compareUint(uint64(a.votes), uint64(b.votes))
+	case a.timeouts != b.timeouts:
+		return compareUint(uint64(b.timeouts), uint64(a.timeouts))
+	default:
+		return compareUint(uint64(len(a.announcers)), uint64(len(b.announcers)))
+	}
+}
+
+func compareUint(a, b uint64) int {
+	switch {
+	case a > b:
+		return 1
+	case a < b:
+		return -1
+	}
+	return 0
 }
 
 func (d *Downloader) startSync() {
 	d.isSyncing = true
-	// A failed pass or a wait for manifests of an earlier sync does not carry over.
+	// A failed pass, a wait for manifests or failed snapshots of an earlier sync do not carry over.
 	d.fullSyncNext = false
 	d.manifestsAwaited = false
+	d.snapshotFailures = nil
+	d.failedAnnouncers = nil
 	d.chain.StartSync()
 	d.sm.StartSync()
 }

@@ -284,3 +284,13 @@ func (m *SnapshotManager) AddTimeoutManifest(cid []byte) {
 	}
 	m.db.Set(key, value)
 }
+
+// ManifestTimeouts returns how many downloads of the snapshot have failed (MaxManifestTimeouts once it is invalid).
+func (m *SnapshotManager) ManifestTimeouts(cid []byte) byte {
+	key := append(append([]byte{}, InvalidManifestPrefix...), cid...)
+	v, err := m.db.Get(key)
+	if err != nil || len(v) == 0 {
+		return 0
+	}
+	return v[0]
+}

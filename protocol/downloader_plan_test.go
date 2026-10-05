@@ -216,12 +216,13 @@ func TestDownloaderWaitsForManifestsOncePerSync(t *testing.T) {
 	chain.PreliminaryHead = headersAt(head + 3000)
 	go func() {
 		time.Sleep(time.Second)
-		setManifest(&snapshot.Manifest{Height: head + 4000})
+		setManifest(&snapshot.Manifest{Height: head + 4000, CidV2: []byte("cid")})
 	}()
 
 	applier, to := d.createBlockApplier()
 	require.IsType(t, &fastSync{}, applier)
 	require.Equal(t, head+4000, to)
+	require.Equal(t, []peer.ID{"peer"}, applier.(*fastSync).announcers)
 
 	setManifest(nil)
 	started := time.Now()
@@ -231,13 +232,16 @@ func TestDownloaderWaitsForManifestsOncePerSync(t *testing.T) {
 	require.Equal(t, head+fullSyncSlice, to)
 }
 
-// A failed fast sync pass or a wait for manifests of an earlier sync does not carry over to the next sync.
+// A failed fast sync pass, a wait for manifests or failed snapshots of an earlier sync do not carry over to the next sync.
 func TestDownloaderStartSyncForgetsTheLastSync(t *testing.T) {
 	chain, _, _, _ := blockchain.NewTestBlockchain(false, nil)
-	d := &Downloader{chain: chain.Blockchain, sm: &state.SnapshotManager{}, fullSyncNext: true, manifestsAwaited: true}
+	d := &Downloader{chain: chain.Blockchain, sm: &state.SnapshotManager{}, fullSyncNext: true, manifestsAwaited: true,
+		snapshotFailures: map[uint64]int{11369095: MaxSnapshotHeightFailures}, failedAnnouncers: map[peer.ID]struct{}{"peer": {}}}
 
 	d.startSync()
 
 	require.False(t, d.fullSyncNext)
 	require.False(t, d.manifestsAwaited)
+	require.Empty(t, d.snapshotFailures)
+	require.Empty(t, d.failedAnnouncers)
 }
