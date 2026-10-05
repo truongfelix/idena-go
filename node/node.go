@@ -6,6 +6,7 @@ import (
 	"github.com/idena-network/idena-go/blockchain"
 	"github.com/idena-network/idena-go/blockchain/types"
 	"github.com/idena-network/idena-go/blockchain/validation"
+	"github.com/idena-network/idena-go/common"
 	"github.com/idena-network/idena-go/common/eventbus"
 	util "github.com/idena-network/idena-go/common/ulimit"
 	"github.com/idena-network/idena-go/config"
@@ -29,6 +30,7 @@ import (
 	"github.com/idena-network/idena-go/secstore"
 	state2 "github.com/idena-network/idena-go/state"
 	"github.com/idena-network/idena-go/stats/collector"
+	"github.com/idena-network/idena-go/stats/oraclevotings"
 	"github.com/idena-network/idena-go/stats/validationsummary"
 	"github.com/idena-network/idena-go/subscriptions"
 	"github.com/idena-network/idena-go/vm"
@@ -77,6 +79,7 @@ type Node struct {
 	upgrader        *upgrade.Upgrader
 	nodeState       *state2.NodeState
 	summaries       *validationsummary.Store
+	oracleVotings   *oraclevotings.Service
 }
 
 type NodeCtx struct {
@@ -234,6 +237,15 @@ func NewNodeWithInjections(config *config.Config, bus eventbus.Bus, statsCollect
 	// Every component gets the collector with the validation summaries recorded on the side (dna_validationSummary).
 	summaries := validationsummary.NewStore(db)
 	statsCollector = validationsummary.NewRecorder(statsCollector, summaries, appState, bus)
+	// And the oracle voting index (contract_oracleVotings), with the contract payments to the node's addresses.
+	oracleVotings := oraclevotings.NewStore(db)
+	statsCollector = oraclevotings.NewRecorder(statsCollector, oracleVotings, func(addr common.Address) bool {
+		if addr == secStore.GetAddress() {
+			return true
+		}
+		_, err := keyStore.Find(keystore.Account{Address: addr})
+		return err == nil
+	}, bus)
 
 	offlineDetector := blockchain.NewOfflineDetector(config, db, appState, secStore, bus)
 
@@ -294,6 +306,7 @@ func NewNodeWithInjections(config *config.Config, bus eventbus.Bus, statsCollect
 		upgrader:        upgrader,
 		nodeState:       nodeState,
 		summaries:       summaries,
+		oracleVotings:   oraclevotings.NewService(oracleVotings, &oracleVotingChain{chain, consensusEngine, summaries}),
 		httpListener:    httpListener,
 		httpHandler:     httpHandler,
 		httpServer:      httpServer,
@@ -559,6 +572,34 @@ func compactDb(goLevelDB *db.GoLevelDB) error {
 	return err
 }
 
+// oracleVotingChain is what the oracle voting RPCs read from the node.
+type oracleVotingChain struct {
+	chain     *blockchain.Blockchain
+	engine    *consensus.Engine
+	summaries *validationsummary.Store
+}
+
+func (c *oracleVotingChain) Head() *types.Header {
+	return c.chain.Head
+}
+
+func (c *oracleVotingChain) ReadonlyAppState() (*appstate.AppState, error) {
+	return c.engine.ReadonlyAppState()
+}
+
+func (c *oracleVotingChain) HeaderTime(height uint64) (int64, bool) {
+	header := c.chain.GetBlockHeaderByHeight(height)
+	if header == nil {
+		return 0, false
+	}
+	return header.Time(), true
+}
+
+func (c *oracleVotingChain) ValidatedIn(addr common.Address, epoch uint16) (bool, bool) {
+	validated, known, err := c.summaries.ValidatedIn(epoch, addr)
+	return validated, known && err == nil
+}
+
 // apis returns the collection of RPC descriptors this node offers.
 func (node *Node) apis() []rpc.API {
 
@@ -604,7 +645,7 @@ func (node *Node) apis() []rpc.API {
 		{
 			Namespace: "contract",
 			Version:   "1.0",
-			Service:   api.NewContractApi(baseApi, node.blockchain, node.deferJob, node.subManager),
+			Service:   api.NewContractApi(baseApi, node.blockchain, node.deferJob, node.subManager, node.oracleVotings),
 			Public:    true,
 		},
 	}

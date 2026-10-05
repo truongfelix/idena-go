@@ -295,6 +295,29 @@ func Test_Store_lastEpochNumber(t *testing.T) {
 	require.False(t, s.Participated)
 }
 
+func Test_Store_validatedIn(t *testing.T) {
+	store := NewStore(db.NewMemDB())
+	newbie, suspended, absent := common.Address{1}, common.Address{2}, common.Address{3}
+	require.NoError(t, store.Write(7, false, []*Summary{
+		{Epoch: 7, Address: newbie, State: "Newbie"},
+		{Epoch: 7, Address: suspended, State: "Suspended"},
+	}))
+	require.NoError(t, store.Write(8, true, nil))
+	check := func(epoch uint16, addr common.Address, validated, known bool) {
+		v, k, err := store.ValidatedIn(epoch, addr)
+		require.NoError(t, err)
+		require.Equal(t, [2]bool{validated, known}, [2]bool{v, k}, "epoch %v address %v", epoch, addr.Hex())
+	}
+	// Epoch 8 runs with the states the ceremony of epoch 7 left.
+	check(8, newbie, true, true)
+	check(8, suspended, false, true)
+	check(8, absent, false, true)
+	// The ceremony of epoch 8 failed (the states were kept, not recorded); epoch 6 was not recorded.
+	check(9, newbie, false, false)
+	check(7, newbie, false, false)
+	check(0, newbie, false, false)
+}
+
 func Test_Summary_json(t *testing.T) {
 	zero := Summary{}.Rewards.Staking.Earned
 	data, err := json.Marshal(&Summary{
