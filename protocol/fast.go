@@ -18,6 +18,7 @@ import (
 	"github.com/idena-network/idena-go/keystore"
 	"github.com/idena-network/idena-go/log"
 	"github.com/idena-network/idena-go/subscriptions"
+	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/pkg/errors"
 	"os"
 	"time"
@@ -51,6 +52,11 @@ type fastSync struct {
 	prevConfig           *config.ConsensusConf
 
 	pubKeyToAddrCache map[string]common.Address
+
+	// announcers are the peers that announced the manifest when the pass chose it.
+	announcers []peer.ID
+	// snapshotFailure tells whether the pass tried the manifest's snapshot and failed (afterFailedPass).
+	snapshotFailure snapshotFailure
 }
 
 func (fs *fastSync) batchSize() uint64 {
@@ -390,15 +396,24 @@ func (fs *fastSync) postConsuming() (err error) {
 	if fs.chain.PreliminaryHead.Height() != fs.manifest.Height {
 		return errors.New("preliminary head is lower than manifest's head")
 	}
-
-	/*	if fs.chain.PreliminaryHead.Root() != fs.manifest.Root {
+	// Nodes make a snapshot only at a block with the Snapshot flag, once per SnapshotRange blocks: a manifest of
+	// another height cannot be downloaded or loaded.
+	if !fs.chain.PreliminaryHead.Flags().HasFlag(types.Snapshot) {
 		fs.sm.AddInvalidManifest(fs.manifest.CidV2)
-		return errors.New("preliminary head's root doesn't equal manifest's root")
-	}*/
+		fs.snapshotFailure = noSnapshotAtHeight
+		return errors.New("no snapshot is made at manifest's height")
+	}
+
+	// The manifest's root is not checked before the download: it is not part of the snapshot's CID, and a node
+	// announces the root of the manifest it downloaded, so a wrong root would mark a good snapshot invalid. The
+	// snapshot is checked against the header's root once loaded (RecoverSnapshot2).
 	fs.log.Info("Start loading of snapshot", "height", fs.manifest.Height)
 	filePath, version, err := fs.sm.DownloadSnapshot(fs.manifest)
 	if err != nil {
+		// A download cut by the time limit counts too: a retry of the CID reads the blocks it already got from
+		// the node's IPFS blockstore, so a slow download goes on where it stopped.
 		fs.sm.AddTimeoutManifest(fs.manifest.CidV2)
+		fs.snapshotFailure = snapshotFailed
 		return errors.WithMessage(err, "snapshot's downloading has been failed")
 	}
 	fs.log.Info("Snapshot has been loaded", "height", fs.manifest.Height)
@@ -415,6 +430,7 @@ func (fs *fastSync) postConsuming() (err error) {
 	file.Close()
 	if err != nil {
 		fs.sm.AddInvalidManifest(fs.manifest.CidV2)
+		fs.snapshotFailure = snapshotFailed
 		//TODO : add snapshot to ban list
 		return err
 	}
