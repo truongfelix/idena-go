@@ -2641,6 +2641,10 @@ func (chain *Blockchain) GetBlockHeaderByHeight(height uint64) *types.Header {
 	return chain.repo.ReadBlockHeader(hash)
 }
 
+func (chain *Blockchain) GetBlockHeader(hash common.Hash) *types.Header {
+	return chain.repo.ReadBlockHeader(hash)
+}
+
 func (chain *Blockchain) GetTxIndex(hash common.Hash) *types.TransactionIndex {
 	return chain.repo.ReadTxIndex(hash)
 }

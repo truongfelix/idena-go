@@ -12,6 +12,7 @@ import (
 	"github.com/idena-network/idena-go/common/hexutil"
 	"github.com/idena-network/idena-go/core/state"
 	"github.com/idena-network/idena-go/deferredtx"
+	"github.com/idena-network/idena-go/stats/oraclevotings"
 	"github.com/idena-network/idena-go/subscriptions"
 	"github.com/idena-network/idena-go/vm"
 	"github.com/idena-network/idena-go/vm/costs"
@@ -25,15 +26,17 @@ import (
 )
 
 type ContractApi struct {
-	baseApi     *BaseApi
-	bc          *blockchain.Blockchain
-	deferredTxs *deferredtx.Job
-	subManager  *subscriptions.Manager
+	baseApi       *BaseApi
+	bc            *blockchain.Blockchain
+	deferredTxs   *deferredtx.Job
+	subManager    *subscriptions.Manager
+	oracleVotings *oraclevotings.Service
 }
 
 // NewContractApi creates a new NetApi instance
-func NewContractApi(baseApi *BaseApi, bc *blockchain.Blockchain, deferredTxs *deferredtx.Job, subManager *subscriptions.Manager) *ContractApi {
-	return &ContractApi{baseApi: baseApi, bc: bc, deferredTxs: deferredTxs, subManager: subManager}
+func NewContractApi(baseApi *BaseApi, bc *blockchain.Blockchain, deferredTxs *deferredtx.Job, subManager *subscriptions.Manager,
+	oracleVotings *oraclevotings.Service) *ContractApi {
+	return &ContractApi{baseApi: baseApi, bc: bc, deferredTxs: deferredTxs, subManager: subManager, oracleVotings: oracleVotings}
 }
 
 type DeployArgs struct {

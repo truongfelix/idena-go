@@ -125,3 +125,21 @@ func (s *Store) Get(epoch uint16, address common.Address) (*Summary, error) {
 	}
 	return summary, nil
 }
+
+// ValidatedIn tells whether the address was a validated identity (Newbie, Verified, Human) during the epoch: its
+// state after the ceremony that ended the epoch before. known is false when this node did not record that
+// ceremony, or it failed (the identities kept their states, which the summaries do not hold).
+func (s *Store) ValidatedIn(epoch uint16, address common.Address) (validated, known bool, err error) {
+	if epoch == 0 {
+		return false, false, nil
+	}
+	summary, err := s.Get(epoch-1, address)
+	if err != nil || summary == nil || summary.ValidationFailed {
+		return false, false, err
+	}
+	switch summary.State {
+	case "Newbie", "Verified", "Human":
+		return true, true, nil
+	}
+	return false, true, nil
+}
