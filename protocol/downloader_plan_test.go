@@ -2,14 +2,20 @@ package protocol
 
 import (
 	"testing"
+	"time"
 
 	"github.com/idena-network/idena-go/blockchain"
 	"github.com/idena-network/idena-go/blockchain/types"
+	"github.com/idena-network/idena-go/common/eventbus"
 	"github.com/idena-network/idena-go/config"
+	"github.com/idena-network/idena-go/core/state"
 	"github.com/idena-network/idena-go/core/state/snapshot"
+	"github.com/idena-network/idena-go/crypto"
 	"github.com/idena-network/idena-go/log"
+	"github.com/idena-network/idena-go/secstore"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/stretchr/testify/require"
+	db "github.com/tendermint/tm-db"
 )
 
 func headersAt(height uint64) *types.Header {
@@ -49,8 +55,32 @@ func TestChooseSyncPlan(t *testing.T) {
 		{"headers at the chain", on, 1000, 5000, headersAt(1000), nil, planFullSync, 5000},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			plan, to := chooseSyncPlan(c.cfg, c.head, c.top, c.preliminaryHead, c.manifest)
+			plan, to := chooseSyncPlan(c.cfg, c.head, c.top, c.preliminaryHead, c.manifest, false)
 			require.Equal(t, c.want, plan)
+			require.Equal(t, c.wantTo, to)
+		})
+	}
+}
+
+// After a failed fast sync pass the next pass is one full sync slice, whatever the snapshots and the headers.
+func TestChooseSyncPlanAfterFailedFastSync(t *testing.T) {
+	on := &config.SyncConfig{FastSync: true, ForceFullSync: 100}
+
+	for _, c := range []struct {
+		name            string
+		head, top       uint64
+		preliminaryHead *types.Header
+		manifest        *snapshot.Manifest
+		wantTo          uint64
+	}{
+		{"no headers", 4871137, 11369200, nil, nil, 4872137},
+		{"headers kept, a newer snapshot announced", 4871137, 11370200, headersAt(11369095), &snapshot.Manifest{Height: 11370095}, 4872137},
+		{"slice beyond the top", 5000, 5400, nil, nil, 5400},
+		{"close to the top", 1000, 1050, nil, nil, 1050},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			plan, to := chooseSyncPlan(on, c.head, c.top, c.preliminaryHead, c.manifest, true)
+			require.Equal(t, planFullSync, plan)
 			require.Equal(t, c.wantTo, to)
 		})
 	}
@@ -83,28 +113,19 @@ func TestDownloaderFullSyncsAfterFastSyncGetsNoSnapshot(t *testing.T) {
 	require.False(t, d.fullSyncNext)
 }
 
+// Any failed fast sync pass makes the next pass a full sync slice, whatever its headers: whether they are
+// complete cannot be told from what peers announce.
 func TestDownloaderAfterFailedPass(t *testing.T) {
-	chain, _, _, _ := blockchain.NewTestBlockchain(false, nil)
-	d := &Downloader{chain: chain.Blockchain, top: 11369200}
-	fastSyncTo := func(height uint64) *fastSync { return &fastSync{manifest: &snapshot.Manifest{Height: height}} }
-
 	for _, c := range []struct {
-		name            string
-		preliminaryHead *types.Header
-		applier         blockApplier
-		want            bool
+		name    string
+		applier blockApplier
+		want    bool
 	}{
-		{"snapshot not downloaded or not loaded", headersAt(11369095), fastSyncTo(11369095), true},
-		// The headers can go no further than the top.
-		{"snapshot above the top", headersAt(11369200), fastSyncTo(11400000), true},
-		// The headers are not complete: the fast sync is tried again.
-		{"headers below the snapshot", headersAt(11000000), fastSyncTo(11369095), false},
-		{"no headers", nil, fastSyncTo(11369095), false},
-		{"full sync", headersAt(11369095), &fullSync{}, false},
+		{"fast sync", &fastSync{manifest: &snapshot.Manifest{Height: 11369095}}, true},
+		{"full sync", &fullSync{}, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			chain.PreliminaryHead = c.preliminaryHead
-			d.fullSyncNext = false
+			d := &Downloader{}
 			d.afterFailedPass(c.applier)
 			require.Equal(t, c.want, d.fullSyncNext)
 		})
@@ -142,4 +163,81 @@ func TestRequestBatchesStopsAtTarget(t *testing.T) {
 			require.Len(t, batches, len(c.want))
 		})
 	}
+}
+
+// A fast sync pass that failed before it stored a header leaves no headers above the chain: the next pass is
+// still one full sync slice, so a node far behind goes back to the fast sync after it instead of full syncing
+// to the top.
+func TestDownloaderSlicesAfterFastSyncWithoutHeaders(t *testing.T) {
+	chain, _, _, _ := blockchain.NewTestBlockchain(false, nil)
+	head := chain.Head.Height()
+	d := &Downloader{
+		cfg:   &config.Config{Sync: &config.SyncConfig{FastSync: true, ForceFullSync: 100}},
+		log:   log.New(),
+		chain: chain.Blockchain,
+		top:   head + 5000000,
+	}
+	chain.PreliminaryHead = headersAt(head)
+	d.afterFailedPass(&fastSync{manifest: &snapshot.Manifest{Height: head + 4000000}})
+	require.True(t, d.fullSyncNext)
+
+	applier, to := d.createBlockApplier()
+	require.IsType(t, &fullSync{}, applier)
+	require.Equal(t, head+fullSyncSlice, to)
+}
+
+// A restart keeps the fast sync headers, and the first pass can come before the peers announce their manifests:
+// it waits for them, and the fast sync goes on. The next passes of the sync do not wait: with no manifest
+// announced, a wait would hold every slice.
+func TestDownloaderWaitsForManifestsOncePerSync(t *testing.T) {
+	chain, _, _, _ := blockchain.NewTestBlockchain(false, nil)
+	head := chain.Head.Height()
+	key, err := crypto.GenerateKey()
+	require.NoError(t, err)
+	secStore := secstore.NewSecStore()
+	secStore.AddKey(crypto.FromECDSA(key))
+	pm := &IdenaGossipHandler{peers: newPeerSet()}
+	p := &protoPeer{id: "peer", log: log.New(), queuedRequests: make(chan *request, 10), finished: make(chan struct{})}
+	require.NoError(t, pm.peers.Register(p))
+	setManifest := func(m *snapshot.Manifest) {
+		p.manifestLock.Lock()
+		p.manifest = m
+		p.manifestLock.Unlock()
+	}
+	d := &Downloader{
+		cfg:      &config.Config{Sync: &config.SyncConfig{FastSync: true, ForceFullSync: 100}},
+		log:      log.New(),
+		chain:    chain.Blockchain,
+		pm:       pm,
+		sm:       state.NewSnapshotManager(db.NewMemDB(), nil, eventbus.New(), nil, nil),
+		secStore: secStore,
+		top:      head + 5000,
+	}
+	chain.PreliminaryHead = headersAt(head + 3000)
+	go func() {
+		time.Sleep(time.Second)
+		setManifest(&snapshot.Manifest{Height: head + 4000})
+	}()
+
+	applier, to := d.createBlockApplier()
+	require.IsType(t, &fastSync{}, applier)
+	require.Equal(t, head+4000, to)
+
+	setManifest(nil)
+	started := time.Now()
+	applier, to = d.createBlockApplier()
+	require.Less(t, time.Since(started), 5*time.Second)
+	require.IsType(t, &fullSync{}, applier)
+	require.Equal(t, head+fullSyncSlice, to)
+}
+
+// A failed fast sync pass or a wait for manifests of an earlier sync does not carry over to the next sync.
+func TestDownloaderStartSyncForgetsTheLastSync(t *testing.T) {
+	chain, _, _, _ := blockchain.NewTestBlockchain(false, nil)
+	d := &Downloader{chain: chain.Blockchain, sm: &state.SnapshotManager{}, fullSyncNext: true, manifestsAwaited: true}
+
+	d.startSync()
+
+	require.False(t, d.fullSyncNext)
+	require.False(t, d.manifestsAwaited)
 }
