@@ -140,6 +140,38 @@ var (
 		Name:  "profile",
 		Usage: "Configuration profile",
 	}
+	// The peer and IPFS connection limit flags show the default profile's values; given, a flag overrides the
+	// value of any profile.
+	MaxInboundOwnShardPeersFlag = cli.IntFlag{
+		Name:  "maxinboundownshardpeers",
+		Usage: "Incoming peer slots for peers of the node's own shard; overrides the profile",
+		Value: DefaultMaxInboundOwnShardPeers,
+	}
+	MaxInboundPeersFlag = cli.IntFlag{
+		Name:  "maxinboundpeers",
+		Usage: "Incoming peer slots for peers of other shards; overrides the profile",
+		Value: DefaultMaxInboundNotOwnShardPeers,
+	}
+	MaxOutboundOwnShardPeersFlag = cli.IntFlag{
+		Name:  "maxoutboundownshardpeers",
+		Usage: "Outgoing peer slots for peers of the node's own shard; overrides the profile",
+		Value: DefaultMaxOutboundOwnShardPeers,
+	}
+	MaxOutboundPeersFlag = cli.IntFlag{
+		Name:  "maxoutboundpeers",
+		Usage: "Outgoing peer slots for peers of other shards; overrides the profile",
+		Value: DefaultMaxOutboundNotOwnShardPeers,
+	}
+	IpfsLowWaterFlag = cli.IntFlag{
+		Name:  "ipfslowwater",
+		Usage: "IPFS connections kept when the connection manager trims; overrides the profile",
+		Value: 30,
+	}
+	IpfsHighWaterFlag = cli.IntFlag{
+		Name:  "ipfshighwater",
+		Usage: "IPFS connections above which the connection manager trims down to --ipfslowwater, 0 keeps every connection; overrides the profile",
+		Value: 50,
+	}
 	IpfsPortStaticFlag = cli.BoolFlag{
 		Name:  "ipfsportstatic",
 		Usage: "Enable static ipfs port",
