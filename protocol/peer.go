@@ -72,6 +72,18 @@ func (s *syncHeight) Read() uint64 {
 	return s.value
 }
 
+// heightCapTTL is how long a cap on a peer's height (capHeight) lasts when nothing raises it; the sync then counts
+// the height the peer announced again. A var so tests can shorten it.
+var heightCapTTL = 10 * time.Minute
+
+// heightCap is the height the sync counts for a peer after it did not serve blocks up to the height it announced.
+type heightCap struct {
+	lock   sync.Mutex
+	height uint64
+	// until is when the cap lapses; zero when the peer has no cap.
+	until time.Time
+}
+
 type protoPeer struct {
 	id                   peer.ID
 	prettyId             string
@@ -80,6 +92,7 @@ type protoPeer struct {
 	maxDelayMs           int
 	knownHeight          *syncHeight
 	potentialHeight      *syncHeight
+	heightCap            heightCap
 	manifestLock         sync.Mutex
 	manifest             *snapshot.Manifest
 	queuedRequests       chan *request
@@ -537,10 +550,41 @@ func msgKey(data []byte) string {
 }
 
 func (p *protoPeer) setHeight(newHeight uint64) {
+	p.heightCap.lock.Lock()
 	if newHeight > p.knownHeight.Read() {
 		p.knownHeight.Store(newHeight)
+		// A height above the announced one (a block served, a proposal): the sync counts it, until the peer does
+		// not serve it.
+		p.heightCap.until = time.Time{}
+	} else if newHeight > p.heightCap.height {
+		// A block served above the cap.
+		p.heightCap.height = newHeight
 	}
+	p.heightCap.lock.Unlock()
 	p.setPotentialHeight(newHeight)
+}
+
+// capHeight caps the height the sync counts for a peer at the last block it served, after it did not serve the
+// next one in time, so that the sync target does not stay above the blocks peers serve. The announced height stays
+// (knownHeight): the full sync wants a certificate on the block at it. The cap lapses after heightCapTTL, and a
+// block served above it or a higher announced height lifts it: a peer that missed blocks during a link drop counts
+// again.
+func (p *protoPeer) capHeight(height uint64) {
+	p.heightCap.lock.Lock()
+	defer p.heightCap.lock.Unlock()
+	p.heightCap.height = height
+	p.heightCap.until = time.Now().Add(heightCapTTL)
+}
+
+// syncTargetHeight is the height the sync counts for the peer: the announced one, or a lower cap while it lasts.
+func (p *protoPeer) syncTargetHeight() uint64 {
+	p.heightCap.lock.Lock()
+	defer p.heightCap.lock.Unlock()
+	known := p.knownHeight.Read()
+	if !p.heightCap.until.IsZero() && time.Now().Before(p.heightCap.until) && p.heightCap.height < known {
+		return p.heightCap.height
+	}
+	return known
 }
 
 func (p *protoPeer) setPotentialHeight(newHeight uint64) {
