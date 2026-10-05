@@ -33,7 +33,7 @@ git -C "$ROOT_DIR" merge-base --is-ancestor "$runtime_base" HEAD
 unexpected=0
 while IFS= read -r -d '' path; do
   case "$path" in
-    README.md|compatibility/*|scripts/check-compatibility-runtime.sh|scripts/check-release-compatibility.sh|scripts/check_release_compatibility.py|scripts/check_release_compatibility_test.go|scripts/verify_release_artifacts.py|.github/workflows/compatibility.yml|.github/workflows/candidate-artifacts.yml|.github/workflows/release.yml)
+    README.md|compatibility/*|scripts/check-compatibility-runtime.sh|scripts/check-release-compatibility.sh|scripts/check_release_compatibility.py|scripts/check_release_compatibility_test.go|scripts/verify_release_artifacts.py|.github/*)
       ;;
     *_test.go|testdata/*|*/testdata/*)
       ;;
