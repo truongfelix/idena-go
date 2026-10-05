@@ -368,6 +368,19 @@ func applyP2PFlags(ctx *cli.Context, cfg *Config) {
 	if ctx.IsSet(MaxNetworkDelayFlag.Name) {
 		cfg.P2P.MaxDelay = ctx.Int(MaxNetworkDelayFlag.Name)
 	}
+	// Applied after the profile, which sets all four.
+	if ctx.IsSet(MaxInboundOwnShardPeersFlag.Name) {
+		cfg.P2P.MaxInboundOwnShardPeers = ctx.Int(MaxInboundOwnShardPeersFlag.Name)
+	}
+	if ctx.IsSet(MaxInboundPeersFlag.Name) {
+		cfg.P2P.MaxInboundPeers = ctx.Int(MaxInboundPeersFlag.Name)
+	}
+	if ctx.IsSet(MaxOutboundOwnShardPeersFlag.Name) {
+		cfg.P2P.MaxOutboundOwnShardPeers = ctx.Int(MaxOutboundOwnShardPeersFlag.Name)
+	}
+	if ctx.IsSet(MaxOutboundPeersFlag.Name) {
+		cfg.P2P.MaxOutboundPeers = ctx.Int(MaxOutboundPeersFlag.Name)
+	}
 }
 
 func applyConsensusFlags(ctx *cli.Context, cfg *Config) {
@@ -415,10 +428,20 @@ func applyIpfsFlags(ctx *cli.Context, cfg *Config) {
 	if ctx.IsSet(IpfsWriteBufferFlag.Name) {
 		cfg.IpfsConf.DatastoreWriteBufferMiB = ctx.Int(IpfsWriteBufferFlag.Name)
 	}
+	// Applied after the profile, which sets both.
+	if ctx.IsSet(IpfsLowWaterFlag.Name) {
+		cfg.IpfsConf.LowWater = ctx.Int(IpfsLowWaterFlag.Name)
+	}
+	if ctx.IsSet(IpfsHighWaterFlag.Name) {
+		cfg.IpfsConf.HighWater = ctx.Int(IpfsHighWaterFlag.Name)
+	}
 }
 
 func validateConfig(cfg *Config) error {
 	if err := validateDatabaseConfig(cfg.Database); err != nil {
+		return err
+	}
+	if err := validatePeerLimits(cfg.P2P); err != nil {
 		return err
 	}
 	if cfg.IpfsConf == nil {
@@ -427,7 +450,39 @@ func validateConfig(cfg *Config) error {
 	if err := validateIpfsDatastoreWriteBuffer(cfg.IpfsConf.DatastoreWriteBufferMiB); err != nil {
 		return err
 	}
+	if err := validateIpfsConnectionLimits(cfg.IpfsConf.LowWater, cfg.IpfsConf.HighWater); err != nil {
+		return err
+	}
 	return validateIpfsRouting(cfg.IpfsConf.Routing)
+}
+
+func validatePeerLimits(p2p P2P) error {
+	limits := []struct {
+		name  string
+		value int
+	}{
+		{"P2P.MaxInboundOwnShardPeers", p2p.MaxInboundOwnShardPeers},
+		{"P2P.MaxInboundPeers", p2p.MaxInboundPeers},
+		{"P2P.MaxOutboundOwnShardPeers", p2p.MaxOutboundOwnShardPeers},
+		{"P2P.MaxOutboundPeers", p2p.MaxOutboundPeers},
+	}
+	for _, limit := range limits {
+		if limit.value < 0 {
+			return errors.Errorf("invalid %s %d: must not be negative", limit.name, limit.value)
+		}
+	}
+	return nil
+}
+
+// validateIpfsConnectionLimits accepts 0 for either value: the connection manager then keeps every connection.
+func validateIpfsConnectionLimits(lowWater, highWater int) error {
+	if lowWater < 0 || highWater < 0 {
+		return errors.Errorf("invalid IpfsConf.LowWater %d / HighWater %d: must not be negative", lowWater, highWater)
+	}
+	if highWater > 0 && lowWater > highWater {
+		return errors.Errorf("invalid IpfsConf.LowWater %d: must not be above HighWater %d", lowWater, highWater)
+	}
+	return nil
 }
 
 func validateIpfsRouting(routing string) error {

@@ -102,6 +102,12 @@ To connect to the Idena mainnet, run the executable without parameters.
 * `--verbosity` Log verbosity (default `3` - `Info`)
 * `--nodiscovery` Do not discover another nodes (default `false`)
 * `--profile=lowpower` Reduce bandwidth usage
+* `--maxinboundownshardpeers`, `--maxinboundpeers`, `--maxoutboundownshardpeers`, `--maxoutboundpeers` Peer slots,
+  incoming and outgoing, for peers of the node's own shard and of other shards (default profile `8`, `4`, `4`, `2`;
+  `--profile=lowpower` `3`, `1`, `2`, `1`); a flag given overrides the profile's value
+* `--ipfslowwater`, `--ipfshighwater` IPFS connection manager: above the high water it closes the least used
+  connections down to the low water (default profile `30`, `50`; `--profile=lowpower` `8`, `10`); a high water of
+  `0` keeps every connection; a flag given overrides the profile's value
 * `--apikey` Set RPC API key
 * `--logfilesize` Set maximum log file size in KB (default `10240`)
 

@@ -308,6 +308,12 @@ func newTestContext(t *testing.T) *cli.Context {
 		ProfileFlag,
 		DbWriteBufferFlag,
 		IpfsWriteBufferFlag,
+		MaxInboundOwnShardPeersFlag,
+		MaxInboundPeersFlag,
+		MaxOutboundOwnShardPeersFlag,
+		MaxOutboundPeersFlag,
+		IpfsLowWaterFlag,
+		IpfsHighWaterFlag,
 	}
 	flagSet := flag.NewFlagSet("test", flag.ContinueOnError)
 	for _, f := range app.Flags {
@@ -390,4 +396,116 @@ func TestMakeConfigRejectsInvalidIpfsDatastoreWriteBuffer(t *testing.T) {
 
 	_, err := MakeMobileConfig(t.TempDir(), `{"IpfsConf":{"DatastoreWriteBufferMiB":300}}`)
 	require.ErrorContains(t, err, "invalid IpfsConf.DatastoreWriteBufferMiB")
+}
+
+func TestMakeConfigKeepsProfilePeerLimitsWithoutFlags(t *testing.T) {
+	cfg, err := MakeConfig(newTestContext(t), func(cfg *Config) {})
+	require.NoError(t, err)
+
+	require.Equal(t, DefaultMaxInboundOwnShardPeers, cfg.P2P.MaxInboundOwnShardPeers)
+	require.Equal(t, DefaultMaxInboundNotOwnShardPeers, cfg.P2P.MaxInboundPeers)
+	require.Equal(t, DefaultMaxOutboundOwnShardPeers, cfg.P2P.MaxOutboundOwnShardPeers)
+	require.Equal(t, DefaultMaxOutboundNotOwnShardPeers, cfg.P2P.MaxOutboundPeers)
+	require.Equal(t, 30, cfg.IpfsConf.LowWater)
+	require.Equal(t, 50, cfg.IpfsConf.HighWater)
+}
+
+func TestMakeConfigKeepsLowPowerProfileWithoutFlags(t *testing.T) {
+	// The flags show the default profile's values: unset, they leave another profile's values.
+	ctx := newTestContext(t)
+	require.NoError(t, ctx.Set(ProfileFlag.Name, LowPowerProfile))
+
+	cfg, err := MakeConfig(ctx, func(cfg *Config) {})
+	require.NoError(t, err)
+
+	require.Equal(t, LowPowerMaxInboundOwnShardPeers, cfg.P2P.MaxInboundOwnShardPeers)
+	require.Equal(t, LowPowerMaxInboundNotOwnShardPeers, cfg.P2P.MaxInboundPeers)
+	require.Equal(t, LowPowerMaxOutboundOwnShardPeers, cfg.P2P.MaxOutboundOwnShardPeers)
+	require.Equal(t, LowPowerMaxOutboundNotOwnShardPeers, cfg.P2P.MaxOutboundPeers)
+	require.Equal(t, 8, cfg.IpfsConf.LowWater)
+	require.Equal(t, 10, cfg.IpfsConf.HighWater)
+}
+
+func TestMakeConfigAppliesPeerLimitFlagsOverTheProfile(t *testing.T) {
+	for _, profile := range []string{"", LowPowerProfile, SharedNodeProfile, DefaultProfile} {
+		ctx := newTestContext(t)
+		if profile != "" {
+			require.NoError(t, ctx.Set(ProfileFlag.Name, profile))
+		}
+		require.NoError(t, ctx.Set(MaxInboundOwnShardPeersFlag.Name, "16"))
+		require.NoError(t, ctx.Set(MaxInboundPeersFlag.Name, "8"))
+		require.NoError(t, ctx.Set(MaxOutboundOwnShardPeersFlag.Name, "3"))
+		require.NoError(t, ctx.Set(MaxOutboundPeersFlag.Name, "1"))
+		require.NoError(t, ctx.Set(IpfsLowWaterFlag.Name, "50"))
+		require.NoError(t, ctx.Set(IpfsHighWaterFlag.Name, "100"))
+
+		cfg, err := MakeConfig(ctx, func(cfg *Config) {})
+		require.NoError(t, err, profile)
+
+		require.Equal(t, 16, cfg.P2P.MaxInboundOwnShardPeers, profile)
+		require.Equal(t, 8, cfg.P2P.MaxInboundPeers, profile)
+		require.Equal(t, 3, cfg.P2P.MaxOutboundOwnShardPeers, profile)
+		require.Equal(t, 1, cfg.P2P.MaxOutboundPeers, profile)
+		require.Equal(t, 50, cfg.IpfsConf.LowWater, profile)
+		require.Equal(t, 100, cfg.IpfsConf.HighWater, profile)
+	}
+}
+
+func TestMakeConfigAppliesOnlyThePeerLimitFlagsSet(t *testing.T) {
+	ctx := newTestContext(t)
+	require.NoError(t, ctx.Set(MaxInboundOwnShardPeersFlag.Name, "16"))
+	require.NoError(t, ctx.Set(IpfsHighWaterFlag.Name, "0"))
+
+	cfg, err := MakeConfig(ctx, func(cfg *Config) {})
+	require.NoError(t, err)
+
+	require.Equal(t, 16, cfg.P2P.MaxInboundOwnShardPeers)
+	require.Equal(t, DefaultMaxInboundNotOwnShardPeers, cfg.P2P.MaxInboundPeers)
+	require.Equal(t, DefaultMaxOutboundOwnShardPeers, cfg.P2P.MaxOutboundOwnShardPeers)
+	require.Equal(t, DefaultMaxOutboundNotOwnShardPeers, cfg.P2P.MaxOutboundPeers)
+	// HighWater 0: the connection manager keeps every connection.
+	require.Equal(t, 30, cfg.IpfsConf.LowWater)
+	require.Zero(t, cfg.IpfsConf.HighWater)
+}
+
+func TestMakeConfigRejectsInvalidPeerLimits(t *testing.T) {
+	for _, f := range []cli.IntFlag{MaxInboundOwnShardPeersFlag, MaxInboundPeersFlag, MaxOutboundOwnShardPeersFlag, MaxOutboundPeersFlag} {
+		ctx := newTestContext(t)
+		require.NoError(t, ctx.Set(f.Name, "-1"))
+
+		_, err := MakeConfig(ctx, func(cfg *Config) {})
+
+		require.ErrorContains(t, err, "must not be negative", f.Name)
+	}
+}
+
+func TestMakeConfigRejectsInvalidIpfsConnectionLimits(t *testing.T) {
+	ctx := newTestContext(t)
+	require.NoError(t, ctx.Set(IpfsLowWaterFlag.Name, "-1"))
+	_, err := MakeConfig(ctx, func(cfg *Config) {})
+	require.ErrorContains(t, err, "must not be negative")
+
+	ctx = newTestContext(t)
+	require.NoError(t, ctx.Set(IpfsLowWaterFlag.Name, "60"))
+	require.NoError(t, ctx.Set(IpfsHighWaterFlag.Name, "50"))
+	_, err = MakeConfig(ctx, func(cfg *Config) {})
+	require.ErrorContains(t, err, "must not be above HighWater")
+
+	_, err = MakeMobileConfig(t.TempDir(), `{"IpfsConf":{"Profile":"","LowWater":12,"HighWater":10}}`)
+	require.ErrorContains(t, err, "must not be above HighWater")
+	_, err = MakeMobileConfig(t.TempDir(), `{"P2P":{"MaxInboundPeers":-1}}`)
+	require.ErrorContains(t, err, "must not be negative")
+}
+
+func TestMakeMobileConfigReadsPeerAndIpfsConnectionLimits(t *testing.T) {
+	cfg, err := MakeMobileConfig(t.TempDir(), `{"P2P":{"MaxInboundOwnShardPeers":16,"MaxInboundPeers":8,"MaxOutboundOwnShardPeers":4,"MaxOutboundPeers":2},"IpfsConf":{"Profile":"","LowWater":50,"HighWater":100}}`)
+	require.NoError(t, err)
+
+	require.Equal(t, 16, cfg.P2P.MaxInboundOwnShardPeers)
+	require.Equal(t, 8, cfg.P2P.MaxInboundPeers)
+	require.Equal(t, 4, cfg.P2P.MaxOutboundOwnShardPeers)
+	require.Equal(t, 2, cfg.P2P.MaxOutboundPeers)
+	require.Equal(t, 50, cfg.IpfsConf.LowWater)
+	require.Equal(t, 100, cfg.IpfsConf.HighWater)
+	require.Equal(t, DefaultIpfsPort, cfg.IpfsConf.IpfsPort)
 }
