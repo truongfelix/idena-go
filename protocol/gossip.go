@@ -782,6 +782,7 @@ func (h *IdenaGossipHandler) broadcastLoop() {
 	}
 }
 
+// GetKnownHeights returns the height the sync counts for each peer (syncTargetHeight).
 func (h *IdenaGossipHandler) GetKnownHeights() map[peer.ID]uint64 {
 	result := make(map[peer.ID]uint64)
 	peers := h.peers.Peers()
@@ -789,7 +790,7 @@ func (h *IdenaGossipHandler) GetKnownHeights() map[peer.ID]uint64 {
 		return nil
 	}
 	for _, peer := range peers {
-		result[peer.id] = peer.knownHeight.Read()
+		result[peer.id] = peer.syncTargetHeight()
 	}
 	return result
 }

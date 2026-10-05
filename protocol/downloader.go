@@ -33,6 +33,10 @@ const (
 	MaxSnapshotHeightFailures = 3
 )
 
+// batchBlockTimeout is how long a batch waits for each block from a peer before the peer is treated as not
+// serving that range (a var so tests can shorten it).
+var batchBlockTimeout = 20 * time.Second
+
 var (
 	BanReasonTimeout = errors.New("timeout")
 )

@@ -307,7 +307,7 @@ func (fs *fastSync) processBatch(batch *batch, attemptNum int) error {
 	}
 
 	for i := batch.from; i <= batch.to; i++ {
-		timeout := time.After(time.Second * 20)
+		timeout := time.After(batchBlockTimeout)
 
 		select {
 		case block := <-batch.headers:
@@ -338,6 +338,9 @@ func (fs *fastSync) processBatch(batch *batch, attemptNum int) error {
 
 		case <-timeout:
 			fs.log.Warn("process batch - timeout was reached", "peer", batch.p.id)
+			// The peer did not serve the next block in time: for a while the sync counts it only up to the last
+			// block it served, so that the target does not stay above the blocks peers serve.
+			batch.p.capHeight(i - 1)
 			if batch.p.addTimeout() {
 				fs.pm.BanPeer(batch.p.id, BanReasonTimeout)
 			}
