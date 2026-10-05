@@ -265,12 +265,7 @@ func (h *IdenaGossipHandler) handle(p *protoPeer) error {
 		if ib, ok := h.incomeBatches.Load(p.id); ok {
 			peerBatches := ib.(*sync.Map)
 			if pb, ok := peerBatches.Load(response.BatchId); ok {
-				batch := pb.(*batch)
-				for _, b := range response.Blocks {
-					batch.headers <- b
-					p.setHeight(b.Header.Height())
-				}
-				close(batch.headers)
+				pb.(*batch).fill(response.Blocks, func(b *block) { p.setHeight(b.Header.Height()) })
 				h.batchedLock.Lock()
 				peerBatches.Delete(response.BatchId)
 				if maputil.IsSyncMapEmpty(peerBatches) {
@@ -820,12 +815,7 @@ func (h *IdenaGossipHandler) GetBlocksRange(peerId peer.ID, from uint64, to uint
 		return nil, errors.New("protoPeer is not found")
 	}
 
-	b := &batch{
-		from:    from,
-		to:      to,
-		p:       peer,
-		headers: make(chan *block, to-from+1),
-	}
+	b := newBatch(peer, from, to, int(to-from+1))
 	h.batchedLock.Lock()
 	peerBatches, ok := h.incomeBatches.Load(peerId)
 	if !ok {
@@ -836,22 +826,23 @@ func (h *IdenaGossipHandler) GetBlocksRange(peerId peer.ID, from uint64, to uint
 	peerBatches.(*sync.Map).Store(id, b)
 	h.batchedLock.Unlock()
 	peer.sendMsg(GetBlocksRange, &models.ProtoGetBlocksRangeRequest{
-		BatchId: batchId,
+		BatchId: id,
 		From:    from,
 		To:      to,
 	}, common.MultiShard, false)
 	return b, nil
 }
 
+// forkAnswerExtraBlocks is how many blocks a fork answer can hold beyond one per hash sent: the peer goes on until
+// a block with a certificate (blockchain.ReadBlockForForkedPeer), at most StoreCertRange blocks further.
+const forkAnswerExtraBlocks = config.DefaultStoreCertRange
+
 func (h *IdenaGossipHandler) GetForkBlockRange(peerId peer.ID, ownBlocks []common.Hash) (*batch, error) {
 	peer := h.peers.Peer(peerId)
 	if peer == nil {
 		return nil, errors.New("peer is not found")
 	}
-	b := &batch{
-		p:       peer,
-		headers: make(chan *block, 100),
-	}
+	b := newBatch(peer, 0, 0, len(ownBlocks)+forkAnswerExtraBlocks)
 	h.batchedLock.Lock()
 	peerBatches, ok := h.incomeBatches.Load(peerId)
 	if !ok {
@@ -866,7 +857,7 @@ func (h *IdenaGossipHandler) GetForkBlockRange(peerId peer.ID, ownBlocks []commo
 		data = append(data, ownBlocks[idx][:])
 	}
 	peer.sendMsg(GetForkBlockRange, &models.ProtoGetForkBlockRangeRequest{
-		BatchId: batchId,
+		BatchId: id,
 		Blocks:  data,
 	}, common.MultiShard, false)
 	return b, nil

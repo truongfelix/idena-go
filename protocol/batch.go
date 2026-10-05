@@ -9,10 +9,30 @@ import (
 )
 
 type batch struct {
-	p       *protoPeer
-	from    uint64
-	to      uint64
-	headers chan *block
+	p    *protoPeer
+	from uint64
+	to   uint64
+	// maxBlocks is the longest answer the request can get; headers holds that many blocks.
+	maxBlocks int
+	headers   chan *block
+}
+
+// newBatch makes the batch for a request whose answer has at most maxBlocks blocks.
+func newBatch(p *protoPeer, from, to uint64, maxBlocks int) *batch {
+	return &batch{p: p, from: from, to: to, maxBlocks: maxBlocks, headers: make(chan *block, maxBlocks)}
+}
+
+// fill passes the blocks of a peer's answer to the batch, then closes it. An answer longer than the request can
+// get is not passed on: the batch is closed without blocks, and its reader gives up on the peer. Every block of
+// an answer that fits goes into the channel's buffer, so fill returns whether or not the batch is still read.
+func (b *batch) fill(blocks []*block, onBlock func(*block)) {
+	if len(blocks) <= b.maxBlocks {
+		for _, blk := range blocks {
+			b.headers <- blk
+			onBlock(blk)
+		}
+	}
+	close(b.headers)
 }
 
 type block struct {
