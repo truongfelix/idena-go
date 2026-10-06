@@ -19,6 +19,7 @@ import (
 	"github.com/idena-network/idena-go/core/state"
 	"github.com/idena-network/idena-go/core/upgrade"
 	"github.com/idena-network/idena-go/crypto"
+	"github.com/idena-network/idena-go/database"
 	"github.com/idena-network/idena-go/deferredtx"
 	"github.com/idena-network/idena-go/events"
 	"github.com/idena-network/idena-go/ipfs"
@@ -30,6 +31,7 @@ import (
 	"github.com/idena-network/idena-go/secstore"
 	state2 "github.com/idena-network/idena-go/state"
 	"github.com/idena-network/idena-go/stats/collector"
+	"github.com/idena-network/idena-go/stats/identityhistory"
 	"github.com/idena-network/idena-go/stats/oraclevotings"
 	"github.com/idena-network/idena-go/stats/validationsummary"
 	"github.com/idena-network/idena-go/subscriptions"
@@ -80,6 +82,8 @@ type Node struct {
 	nodeState       *state2.NodeState
 	summaries       *validationsummary.Store
 	oracleVotings   *oraclevotings.Service
+	identityHistory *identityhistory.Service
+	historyGaps     <-chan struct{}
 }
 
 type NodeCtx struct {
@@ -237,15 +241,21 @@ func NewNodeWithInjections(config *config.Config, bus eventbus.Bus, statsCollect
 	// Every component gets the collector with the validation summaries recorded on the side (dna_validationSummary).
 	summaries := validationsummary.NewStore(db)
 	statsCollector = validationsummary.NewRecorder(statsCollector, summaries, appState, bus)
-	// And the oracle voting index (contract_oracleVotings), with the contract payments to the node's addresses.
-	oracleVotings := oraclevotings.NewStore(db)
-	statsCollector = oraclevotings.NewRecorder(statsCollector, oracleVotings, func(addr common.Address) bool {
+	// The node's own addresses: its coinbase and the keystore accounts.
+	isOwn := func(addr common.Address) bool {
 		if addr == secStore.GetAddress() {
 			return true
 		}
 		_, err := keyStore.Find(keystore.Account{Address: addr})
 		return err == nil
-	}, bus)
+	}
+	// And the oracle voting index (contract_oracleVotings), with the contract payments to the node's addresses.
+	oracleVotings := oraclevotings.NewStore(db)
+	statsCollector = oraclevotings.NewRecorder(statsCollector, oracleVotings, isOwn, bus)
+	// And the ceremony blocks and the own addresses' mining (dna_identityHistory).
+	identityHistory := identityhistory.NewStore(db)
+	historyRecorder := identityhistory.NewRecorder(statsCollector, identityHistory, appState, isOwn, bus)
+	statsCollector = historyRecorder
 
 	offlineDetector := blockchain.NewOfflineDetector(config, db, appState, secStore, bus)
 
@@ -307,6 +317,8 @@ func NewNodeWithInjections(config *config.Config, bus eventbus.Bus, statsCollect
 		nodeState:       nodeState,
 		summaries:       summaries,
 		oracleVotings:   oraclevotings.NewService(oracleVotings, &oracleVotingChain{chain, consensusEngine, summaries}),
+		identityHistory: identityhistory.NewService(identityHistory, &historyChain{chain, consensusEngine, database.NewRepo(db)}, db, summaries, isOwn),
+		historyGaps:     historyRecorder.Gaps(),
 		httpListener:    httpListener,
 		httpHandler:     httpHandler,
 		httpServer:      httpServer,
@@ -375,6 +387,10 @@ func (node *Node) StartWithHeight(height uint64) error {
 	node.blockchain.ProvideApplyNewEpochFunc(node.ceremony.ApplyNewEpoch)
 	node.offlineDetector.Start(node.blockchain.Head)
 	node.consensusEngine.Start()
+	if err := node.summaries.SetOwn(node.ownAddresses); err != nil {
+		node.log.Error("Cannot keep the own validation summaries", "err", err)
+	}
+	node.identityHistory.Start(node.historyGaps)
 	node.pm.Start()
 	node.upgrader.Start()
 
@@ -600,6 +616,48 @@ func (c *oracleVotingChain) ValidatedIn(addr common.Address, epoch uint16) (bool
 	return validated, known && err == nil
 }
 
+// ownAddresses: the coinbase and the keystore accounts.
+func (node *Node) ownAddresses() []common.Address {
+	addresses := []common.Address{node.secStore.GetAddress()}
+	for _, account := range node.keyStore.Accounts() {
+		if account.Address != addresses[0] {
+			addresses = append(addresses, account.Address)
+		}
+	}
+	return addresses
+}
+
+// historyChain is what dna_identityHistory reads from the node.
+type historyChain struct {
+	chain  *blockchain.Blockchain
+	engine *consensus.Engine
+	repo   *database.Repo
+}
+
+func (c *historyChain) Head() *types.Header {
+	return c.chain.Head
+}
+
+func (c *historyChain) ReadonlyAppState() (*appstate.AppState, error) {
+	return c.engine.ReadonlyAppState()
+}
+
+func (c *historyChain) HeaderByHeight(height uint64) *types.Header {
+	return c.chain.GetBlockHeaderByHeight(height)
+}
+
+func (c *historyChain) CanonicalHash(height uint64) common.Hash {
+	return c.repo.ReadCanonicalHash(height)
+}
+
+func (c *historyChain) IdentityStateDiff(height uint64) *state.IdentityStateDiff {
+	return c.chain.GetIdentityDiff(height)
+}
+
+func (c *historyChain) SavedTxs(address common.Address, count int, token []byte) ([]*types.SavedTransaction, []byte) {
+	return c.chain.ReadTxs(address, count, token)
+}
+
 // apis returns the collection of RPC descriptors this node offers.
 func (node *Node) apis() []rpc.API {
 
@@ -615,7 +673,7 @@ func (node *Node) apis() []rpc.API {
 		{
 			Namespace: "dna",
 			Version:   "1.0",
-			Service:   api.NewDnaApi(baseApi, node.blockchain, node.ceremony, node.appVersion, node.profileManager, node.summaries),
+			Service:   api.NewDnaApi(baseApi, node.blockchain, node.ceremony, node.appVersion, node.profileManager, node.summaries, node.identityHistory),
 			Public:    true,
 		},
 		{

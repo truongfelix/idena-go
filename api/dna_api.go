@@ -18,6 +18,7 @@ import (
 	"github.com/idena-network/idena-go/core/profile"
 	"github.com/idena-network/idena-go/core/state"
 	"github.com/idena-network/idena-go/crypto"
+	"github.com/idena-network/idena-go/stats/identityhistory"
 	"github.com/idena-network/idena-go/stats/validationsummary"
 	"github.com/ipfs/go-cid"
 	"github.com/pkg/errors"
@@ -32,11 +33,12 @@ type DnaApi struct {
 	appVersion     string
 	profileManager *profile.Manager
 	summaries      *validationsummary.Store
+	history        *identityhistory.Service
 }
 
 func NewDnaApi(baseApi *BaseApi, bc *blockchain.Blockchain, ceremony *ceremony.ValidationCeremony, appVersion string,
-	profileManager *profile.Manager, summaries *validationsummary.Store) *DnaApi {
-	return &DnaApi{bc, baseApi, ceremony, appVersion, profileManager, summaries}
+	profileManager *profile.Manager, summaries *validationsummary.Store, history *identityhistory.Service) *DnaApi {
+	return &DnaApi{bc, baseApi, ceremony, appVersion, profileManager, summaries, history}
 }
 
 type State struct {
@@ -372,6 +374,17 @@ func (api *DnaApi) ValidationSummary(address common.Address, epoch *uint16) (*va
 		epoch = &last
 	}
 	return api.summaries.Get(*epoch, address)
+}
+
+// IdentityHistory returns the address's history (default: the coinbase) from this node's own records: the block
+// that ended each epoch since the node's first header, what each ceremony did to the address, and for the node's
+// own addresses their mining rewards and transactions by epoch (identityhistory.History).
+func (api *DnaApi) IdentityHistory(address *common.Address) (*identityhistory.History, error) {
+	if address == nil {
+		coinbase := api.GetCoinbaseAddr()
+		address = &coinbase
+	}
+	return api.history.History(*address)
 }
 
 func (api *DnaApi) Identity(address *common.Address) Identity {
