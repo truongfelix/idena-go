@@ -268,7 +268,7 @@ require (
 	lukechampine.com/blake3 v1.4.1 // indirect
 )
 
-replace github.com/cosmos/iavl => github.com/idena-network/iavl v0.12.3-0.20211223100228-a33b117aa31e
+replace github.com/cosmos/iavl => github.com/truongfelix/iavl v0.12.3-0.20211223100228-a33b117aa31e
 
 replace github.com/idena-network/idena-wasm-binding => github.com/truongfelix/idena-wasm-binding v0.0.0-20260923235352-01ccca5cc3c9
 
