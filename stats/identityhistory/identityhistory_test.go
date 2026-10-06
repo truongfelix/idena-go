@@ -452,3 +452,27 @@ func TestTransactionsAndScores(t *testing.T) {
 		require.Nil(t, e.Mining)
 	}
 }
+
+// At epoch 0 (a new network) no epoch has ended: the history is complete and asks for no fill.
+func TestHistoryCompleteAtEpochZero(t *testing.T) {
+	memdb := &countingDB{DB: db.NewMemDB()}
+	appState, err := appstate.NewAppState(memdb, eventbus.New())
+	require.NoError(t, err)
+	require.NoError(t, appState.Initialize(0))
+	repo := database.NewRepo(memdb)
+	head := &types.Header{ProposedHeader: &types.ProposedHeader{Height: 1, Time: start.Unix()}}
+	repo.WriteBlockHeader(head)
+	repo.WriteCanonicalHash(1, head.Hash())
+	service := NewService(NewStore(memdb), &testChain{repo: repo, head: head, appState: appState}, memdb,
+		validationsummary.NewStore(memdb), func(common.Address) bool { return false })
+
+	h, err := service.History(addr(1))
+	require.NoError(t, err)
+	require.Equal(t, uint16(0), h.Epoch)
+	require.True(t, h.CeremoniesComplete)
+	select {
+	case <-service.wake:
+		t.Fatal("a fill was requested")
+	default:
+	}
+}

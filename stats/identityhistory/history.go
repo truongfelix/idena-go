@@ -85,7 +85,8 @@ func (s *Service) History(address common.Address) (*History, error) {
 	if err != nil {
 		return nil, err
 	}
-	complete := m.Passed && current > 0 && ceremonies[current-1] != nil
+	// At epoch 0 (a new network) no epoch has ended yet: nothing to find.
+	complete := current == 0 || m.Passed && ceremonies[current-1] != nil
 	oldest := current
 	for epoch := range ceremonies {
 		oldest = min(oldest, epoch)
