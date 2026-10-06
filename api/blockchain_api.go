@@ -248,6 +248,10 @@ func (api *BlockchainApi) TxReceipt(hash common.Hash) *TxReceipt {
 	}
 
 	receipt := api.bc.GetReceipt(hash)
+	// No receipt: the transaction is still in the mempool, or it is not a contract transaction.
+	if receipt == nil {
+		return nil
+	}
 
 	return convertReceipt(tx, receipt, feePerGas)
 }
