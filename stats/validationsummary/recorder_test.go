@@ -285,6 +285,48 @@ func Test_Store_keepsLastEpochsAndReplacesAnEpoch(t *testing.T) {
 	require.True(t, s.Participated)
 }
 
+// The node's own addresses keep their summaries for good, the epochs kept before SetOwn included; an epoch where
+// the address had no identity is kept as Get shows it.
+func Test_Store_keepsOwnSummaries(t *testing.T) {
+	store := NewStore(db.NewMemDB())
+	own, other := common.Address{0xa}, common.Address{0xb}
+	both := func(epoch uint16) []*Summary {
+		return []*Summary{{Epoch: epoch, Address: own, Participated: true, State: "Verified"},
+			{Epoch: epoch, Address: other, Participated: true}}
+	}
+	for epoch := uint16(1); epoch <= 3; epoch++ {
+		require.NoError(t, store.Write(epoch, false, both(epoch)))
+	}
+	require.NoError(t, store.SetOwn(func() []common.Address { return []common.Address{own} }))
+	require.NoError(t, store.Write(4, false, []*Summary{{Epoch: 4, Address: other, Participated: true}}))
+	for epoch := uint16(5); epoch <= KeptEpochs+6; epoch++ {
+		require.NoError(t, store.Write(epoch, false, both(epoch)))
+	}
+
+	for epoch := uint16(1); epoch <= KeptEpochs+6; epoch++ {
+		s, err := store.Get(epoch, own)
+		require.NoError(t, err)
+		require.NotNil(t, s, "epoch %d", epoch)
+		require.Equal(t, epoch != 4, s.Participated, "epoch %d", epoch)
+		o, err := store.Get(epoch, other)
+		require.NoError(t, err)
+		require.Equal(t, epoch <= 6, o == nil, "epoch %d", epoch)
+	}
+	s, err := store.Get(4, own)
+	require.NoError(t, err)
+	require.Equal(t, "Undefined", s.State)
+	validated, known, err := store.ValidatedIn(2, own)
+	require.NoError(t, err)
+	require.True(t, known)
+	require.True(t, validated)
+
+	// A reset applies a ceremony block again: the own copy follows.
+	require.NoError(t, store.Write(KeptEpochs+6, false, nil))
+	s, err = store.Get(KeptEpochs+6, own)
+	require.NoError(t, err)
+	require.False(t, s.Participated)
+}
+
 func Test_Store_lastEpochNumber(t *testing.T) {
 	store := NewStore(db.NewMemDB())
 	a := common.Address{0xa}
