@@ -258,6 +258,29 @@ func (chain *TestBlockchain) Ipfs() ipfs.Proxy {
 	return chain.ipfs
 }
 
+// StoreBlock stores block as the canonical block at its height without applying it: its body and its receipts
+// (if any) go to the chain's IPFS and their CIDs into its header. For tests that read stored blocks.
+func (chain *TestBlockchain) StoreBlock(block *types.Block, receipts types.TxReceipts) {
+	bodyCid, err := chain.ipfs.Add(block.Body.ToBytes(), true)
+	if err != nil {
+		panic(err)
+	}
+	block.Header.ProposedHeader.IpfsHash = bodyCid.Bytes()
+	if len(receipts) > 0 {
+		data, err := receipts.ToBytes()
+		if err != nil {
+			panic(err)
+		}
+		receiptsCid, err := chain.ipfs.Add(data, true)
+		if err != nil {
+			panic(err)
+		}
+		block.Header.ProposedHeader.TxReceiptsCid = receiptsCid.Bytes()
+	}
+	chain.repo.WriteBlockHeader(block.Header)
+	chain.repo.WriteCanonicalHash(block.Height(), block.Hash())
+}
+
 func GetDefaultConsensusConfig() *config.ConsensusConf {
 	base := config.GetDefaultConsensusConfig()
 	res := *base

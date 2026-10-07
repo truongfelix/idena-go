@@ -195,8 +195,8 @@ func (api *BlockchainApi) BlocksWithAddress(args BlocksWithAddressArgs) ([]uint6
 // MaxContractCallsBlocks is the most blocks one ContractCalls call reads.
 const MaxContractCallsBlocks = 32
 
-// contractCallsReaders is how many block bodies ContractCalls reads at once: a node that did not apply the
-// blocks itself fetches their bodies from its peers, up to 30 seconds each.
+// contractCallsReaders is how many blocks ContractCalls reads at once: a node that did not apply the blocks
+// itself fetches their bodies and receipts from its peers, up to 30 seconds each.
 const contractCallsReaders = 8
 
 type ContractCallsArgs struct {
@@ -205,7 +205,8 @@ type ContractCallsArgs struct {
 }
 
 // ContractCall is a call of a contract as a block holds it: the transaction at Index in the block at Height,
-// its sender, the coins sent with it, the method and its arguments.
+// its sender, the coins sent with it, the method and its arguments, and whether the contract accepted it (its
+// receipt's success).
 type ContractCall struct {
 	Height    uint64          `json:"height"`
 	Timestamp int64           `json:"timestamp"`
@@ -215,16 +216,18 @@ type ContractCall struct {
 	Amount    decimal.Decimal `json:"amount"`
 	Method    string          `json:"method"`
 	Args      []hexutil.Bytes `json:"args"`
+	Success   bool            `json:"success"`
 }
 
 // ContractCalls returns the calls of args.Contract in the blocks at args.Heights (at most
 // MaxContractCallsBlocks; BlocksWithAddress finds the blocks that may hold a call), in the order of the
 // heights and, in a block, of its transactions. The bodies are read as bcn_blockAt reads them, so it also works
 // for blocks the node did not apply itself (fast sync): the senders are recovered from the signatures. A call
-// that the contract refused is listed too, as the block holds it; the contract's state tells which ones took
-// effect. A block whose body cannot be read is an error, so that no call is missed. Bodies fetched from peers
-// take up to 30 seconds each, read contractCallsReaders at a time, and the RPC server ends a request after a
-// minute: ask for a few blocks per call.
+// that the contract refused is listed too, as the block holds it, with Success false: the block's receipts,
+// read like its body, tell. A block whose body or receipts cannot be read is an error, so that no call is missed
+// or misread. Bodies and receipts fetched from peers take up to 30 seconds each, a block's two at once,
+// contractCallsReaders blocks at a time, and the RPC server ends a request after a minute: ask for a few blocks
+// per call.
 func (api *BlockchainApi) ContractCalls(args ContractCallsArgs) ([]ContractCall, error) {
 	if len(args.Heights) > MaxContractCallsBlocks {
 		return nil, errors.Errorf("more than %d blocks", MaxContractCallsBlocks)
@@ -236,6 +239,8 @@ func (api *BlockchainApi) ContractCalls(args ContractCallsArgs) ([]ContractCall,
 		}
 	}
 	blocks := make([]*types.Block, len(args.Heights))
+	receipts := make([]types.TxReceipts, len(args.Heights))
+	receiptErrs := make([]error, len(args.Heights))
 	var wg sync.WaitGroup
 	slots := make(chan struct{}, contractCallsReaders)
 	for i, height := range args.Heights {
@@ -244,7 +249,17 @@ func (api *BlockchainApi) ContractCalls(args ContractCallsArgs) ([]ContractCall,
 		go func(i int, height uint64) {
 			defer wg.Done()
 			defer func() { <-slots }()
+			header := api.bc.GetBlockHeaderByHeight(height)
+			if header == nil {
+				return
+			}
+			receiptsRead := make(chan struct{})
+			go func() {
+				defer close(receiptsRead)
+				receipts[i], receiptErrs[i] = api.bc.GetBlockTxReceipts(header)
+			}()
 			blocks[i] = api.bc.GetBlockByHeight(height)
+			<-receiptsRead
 		}(i, height)
 	}
 	wg.Wait()
@@ -253,9 +268,35 @@ func (api *BlockchainApi) ContractCalls(args ContractCallsArgs) ([]ContractCall,
 		if block == nil {
 			return nil, errors.Errorf("block %d cannot be read", args.Heights[i])
 		}
-		calls = append(calls, contractCallsOf(block, args.Contract)...)
+		blockCalls := contractCallsOf(block, args.Contract)
+		if len(blockCalls) == 0 {
+			continue
+		}
+		if receiptErrs[i] != nil {
+			return nil, errors.Errorf("the receipts of block %d cannot be read", args.Heights[i])
+		}
+		if err := setCallsSuccess(blockCalls, receipts[i]); err != nil {
+			return nil, errors.Wrapf(err, "block %d", args.Heights[i])
+		}
+		calls = append(calls, blockCalls...)
 	}
 	return calls, nil
+}
+
+// setCallsSuccess sets each call's Success from the receipt of its transaction; a call without one is an error.
+func setCallsSuccess(calls []ContractCall, receipts types.TxReceipts) error {
+	success := make(map[common.Hash]bool, len(receipts))
+	for _, receipt := range receipts {
+		success[receipt.TxHash] = receipt.Success
+	}
+	for i := range calls {
+		accepted, ok := success[calls[i].Hash]
+		if !ok {
+			return errors.Errorf("no receipt for transaction %s", calls[i].Hash.Hex())
+		}
+		calls[i].Success = accepted
+	}
+	return nil
 }
 
 // contractCallsOf returns the calls of contract in block, in their order in the block.

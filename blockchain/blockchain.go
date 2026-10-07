@@ -2669,6 +2669,20 @@ func (chain *Blockchain) GetReceipt(hash common.Hash) *types.TxReceipt {
 	return r[idx.Idx]
 }
 
+// GetBlockTxReceipts returns the receipts of the contract transactions of the block with header, in their order
+// in the block (none for a block without such a transaction). They are read as the block's body is: from IPFS,
+// fetched from the peers when the node does not hold them, so it also works for blocks the node did not apply.
+func (chain *Blockchain) GetBlockTxReceipts(header *types.Header) (types.TxReceipts, error) {
+	if header.ProposedHeader == nil {
+		return nil, nil
+	}
+	data, err := chain.ipfs.Get(header.ProposedHeader.TxReceiptsCid, ipfs.TxReceipt)
+	if err != nil {
+		return nil, err
+	}
+	return types.TxReceipts{}.DecodeBytes(data)
+}
+
 func (chain *Blockchain) GetTx(hash common.Hash) (*types.Transaction, *types.TransactionIndex) {
 	idx := chain.repo.ReadTxIndex(hash)
 	if idx == nil {
