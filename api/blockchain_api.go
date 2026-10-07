@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"github.com/idena-network/idena-go/blockchain"
+	"github.com/idena-network/idena-go/blockchain/attachments"
 	"github.com/idena-network/idena-go/blockchain/fee"
 	"github.com/idena-network/idena-go/blockchain/types"
 	"github.com/idena-network/idena-go/common"
@@ -189,6 +190,105 @@ func (api *BlockchainApi) BlocksWithAddress(args BlocksWithAddressArgs) ([]uint6
 		}
 	}
 	return heights, nil
+}
+
+// MaxContractCallsBlocks is the most blocks one ContractCalls call reads.
+const MaxContractCallsBlocks = 32
+
+// contractCallsReaders is how many block bodies ContractCalls reads at once: a node that did not apply the
+// blocks itself fetches their bodies from its peers, up to 30 seconds each.
+const contractCallsReaders = 8
+
+type ContractCallsArgs struct {
+	Contract common.Address `json:"contract"`
+	Heights  []uint64       `json:"heights"`
+}
+
+// ContractCall is a call of a contract as a block holds it: the transaction at Index in the block at Height,
+// its sender, the coins sent with it, the method and its arguments.
+type ContractCall struct {
+	Height    uint64          `json:"height"`
+	Timestamp int64           `json:"timestamp"`
+	Index     int             `json:"index"`
+	Hash      common.Hash     `json:"hash"`
+	From      common.Address  `json:"from"`
+	Amount    decimal.Decimal `json:"amount"`
+	Method    string          `json:"method"`
+	Args      []hexutil.Bytes `json:"args"`
+}
+
+// ContractCalls returns the calls of args.Contract in the blocks at args.Heights (at most
+// MaxContractCallsBlocks; BlocksWithAddress finds the blocks that may hold a call), in the order of the
+// heights and, in a block, of its transactions. The bodies are read as bcn_blockAt reads them, so it also works
+// for blocks the node did not apply itself (fast sync): the senders are recovered from the signatures. A call
+// that the contract refused is listed too, as the block holds it; the contract's state tells which ones took
+// effect. A block whose body cannot be read is an error, so that no call is missed. Bodies fetched from peers
+// take up to 30 seconds each, read contractCallsReaders at a time, and the RPC server ends a request after a
+// minute: ask for a few blocks per call.
+func (api *BlockchainApi) ContractCalls(args ContractCallsArgs) ([]ContractCall, error) {
+	if len(args.Heights) > MaxContractCallsBlocks {
+		return nil, errors.Errorf("more than %d blocks", MaxContractCallsBlocks)
+	}
+	head := api.bc.Head.Height()
+	for _, height := range args.Heights {
+		if height == 0 || height > head {
+			return nil, errors.Errorf("block %d is not stored", height)
+		}
+	}
+	blocks := make([]*types.Block, len(args.Heights))
+	var wg sync.WaitGroup
+	slots := make(chan struct{}, contractCallsReaders)
+	for i, height := range args.Heights {
+		wg.Add(1)
+		slots <- struct{}{}
+		go func(i int, height uint64) {
+			defer wg.Done()
+			defer func() { <-slots }()
+			blocks[i] = api.bc.GetBlockByHeight(height)
+		}(i, height)
+	}
+	wg.Wait()
+	calls := []ContractCall{}
+	for i, block := range blocks {
+		if block == nil {
+			return nil, errors.Errorf("block %d cannot be read", args.Heights[i])
+		}
+		calls = append(calls, contractCallsOf(block, args.Contract)...)
+	}
+	return calls, nil
+}
+
+// contractCallsOf returns the calls of contract in block, in their order in the block.
+func contractCallsOf(block *types.Block, contract common.Address) []ContractCall {
+	var calls []ContractCall
+	for i, tx := range block.Body.Transactions {
+		if tx.Type != types.CallContractTx || tx.To == nil || *tx.To != contract {
+			continue
+		}
+		attachment := attachments.ParseCallContractAttachment(tx)
+		if attachment == nil {
+			continue
+		}
+		sender, err := types.Sender(tx)
+		if err != nil {
+			continue
+		}
+		args := make([]hexutil.Bytes, len(attachment.Args))
+		for j, arg := range attachment.Args {
+			args[j] = arg
+		}
+		calls = append(calls, ContractCall{
+			Height:    block.Height(),
+			Timestamp: block.Header.Time(),
+			Index:     i,
+			Hash:      tx.Hash(),
+			From:      sender,
+			Amount:    blockchain.ConvertToFloat(tx.AmountOrZero()),
+			Method:    attachment.Method,
+			Args:      args,
+		})
+	}
+	return calls
 }
 
 func (api *BlockchainApi) Transaction(hash common.Hash) *Transaction {
