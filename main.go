@@ -50,6 +50,7 @@ func main() {
 		config.MaxInboundPeersFlag,
 		config.MaxOutboundOwnShardPeersFlag,
 		config.MaxOutboundPeersFlag,
+		config.DirectPeersFlag,
 		config.IpfsLowWaterFlag,
 		config.IpfsHighWaterFlag,
 		config.ProfileFlag,

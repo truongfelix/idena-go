@@ -162,6 +162,10 @@ var (
 		Usage: "Outgoing peer slots for peers of other shards; overrides the profile",
 		Value: DefaultMaxOutboundNotOwnShardPeers,
 	}
+	DirectPeersFlag = cli.StringFlag{
+		Name:  "directpeers",
+		Usage: "Up to 3 nodes to stay connected to beyond the peer slots, comma-separated: peer ids, or multiaddrs ending in /p2p/<id>",
+	}
 	IpfsLowWaterFlag = cli.IntFlag{
 		Name:  "ipfslowwater",
 		Usage: "IPFS connections kept when the connection manager trims; overrides the profile",

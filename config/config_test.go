@@ -312,6 +312,7 @@ func newTestContext(t *testing.T) *cli.Context {
 		MaxInboundPeersFlag,
 		MaxOutboundOwnShardPeersFlag,
 		MaxOutboundPeersFlag,
+		DirectPeersFlag,
 		IpfsLowWaterFlag,
 		IpfsHighWaterFlag,
 	}

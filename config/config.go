@@ -381,6 +381,9 @@ func applyP2PFlags(ctx *cli.Context, cfg *Config) {
 	if ctx.IsSet(MaxOutboundPeersFlag.Name) {
 		cfg.P2P.MaxOutboundPeers = ctx.Int(MaxOutboundPeersFlag.Name)
 	}
+	if ctx.IsSet(DirectPeersFlag.Name) {
+		cfg.P2P.DirectPeers = splitDirectPeers(ctx.String(DirectPeersFlag.Name))
+	}
 }
 
 func applyConsensusFlags(ctx *cli.Context, cfg *Config) {
@@ -442,6 +445,9 @@ func validateConfig(cfg *Config) error {
 		return err
 	}
 	if err := validatePeerLimits(cfg.P2P); err != nil {
+		return err
+	}
+	if _, err := cfg.P2P.DirectPeerInfos(); err != nil {
 		return err
 	}
 	if cfg.IpfsConf == nil {

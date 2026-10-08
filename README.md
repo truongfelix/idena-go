@@ -108,6 +108,10 @@ To connect to the Idena mainnet, run the executable without parameters.
 * `--ipfslowwater`, `--ipfshighwater` IPFS connection manager: above the high water it closes the least used
   connections down to the low water (default profile `30`, `50`; `--profile=lowpower` `8`, `10`); a high water of
   `0` keeps every connection; a flag given overrides the profile's value
+* `--directpeers` Up to 3 nodes to stay connected to beyond the peer slots, comma-separated: a peer id (its address
+  comes from a DHT lookup) or a multiaddr ending in `/p2p/<peer id>`. The node redials them when the connection
+  drops, never disconnects them to make room, and accepts them with no free slot; `net_peers` marks them
+  `"direct": true`. In a config file: `P2P.DirectPeers`. An empty value clears the config file's list
 * `--apikey` Set RPC API key
 * `--logfilesize` Set maximum log file size in KB (default `10240`)
 

@@ -33,6 +33,7 @@ import (
 	"github.com/ipfs/kubo/repo/fsrepo"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	libp2pcore "github.com/libp2p/go-libp2p/core"
+	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multihash"
 	"github.com/patrickmn/go-cache"
 	"github.com/pkg/errors"
@@ -95,6 +96,7 @@ type Proxy interface {
 	GetWithSizeLimit(key []byte, dataType DataType, size int64) ([]byte, error)
 	PubSub() *pubsub.PubSub
 	GC() (ctx context.Context, cancel context.CancelFunc)
+	KeepConnected(peers []peer.AddrInfo)
 }
 
 type ipfsProxy struct {
@@ -117,6 +119,22 @@ func (p *ipfsProxy) Host() libp2pcore.Host {
 
 func (p *ipfsProxy) PubSub() *pubsub.PubSub {
 	return p.node.PubSub
+}
+
+// KeepConnected hands peers to Kubo's peering service: it keeps a connection to each (the given addresses first,
+// a DHT lookup when there are none or they fail), redials with a backoff when it drops and protects it from the
+// connection manager's trimming.
+func (p *ipfsProxy) KeepConnected(peers []peer.AddrInfo) {
+	if len(peers) == 0 {
+		return
+	}
+	if p.node.Peering == nil {
+		p.log.Warn("IPFS peering service is not running, direct peers are not kept connected")
+		return
+	}
+	for _, info := range peers {
+		p.node.Peering.AddPeer(info)
+	}
 }
 
 func NewIpfsProxy(cfg *config.IpfsConfig, bus eventbus.Bus) (Proxy, error) {
@@ -809,6 +827,9 @@ func (i *memoryIpfs) PubSub() *pubsub.PubSub {
 
 func (i *memoryIpfs) ShouldPin(dataType DataType) bool {
 	return true
+}
+
+func (i *memoryIpfs) KeepConnected(peers []peer.AddrInfo) {
 }
 
 func (i *memoryIpfs) Host() libp2pcore.Host {
