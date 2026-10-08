@@ -21,11 +21,13 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"encoding/hex"
+	"fmt"
 	"math/big"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/idena-network/idena-go/common"
@@ -251,6 +253,37 @@ func TestLoadECDSARejectsSymlinkAndTrailingData(t *testing.T) {
 	require.NoError(t, os.Symlink(keyPath, link))
 	_, err = LoadECDSA(link)
 	require.ErrorContains(t, err, "not a regular file")
+}
+
+func TestLoadECDSAIgnoresTrailingWhitespace(t *testing.T) {
+	want, err := HexToECDSA(testPrivHex)
+	require.NoError(t, err)
+	dir := t.TempDir()
+	for i, suffix := range []string{"\n", "\r\n", "  \n", "\t", strings.Repeat(" ", maxPrivateKeyFileSize-64)} {
+		path := filepath.Join(dir, fmt.Sprintf("nodekey-%d", i))
+		require.NoError(t, os.WriteFile(path, []byte(testPrivHex+suffix), 0600))
+
+		key, err := LoadECDSA(path)
+		require.NoError(t, err, "suffix %q", suffix)
+		require.Equal(t, want.D, key.D, "suffix %q", suffix)
+	}
+}
+
+func TestLoadECDSARejectsOtherTrailingData(t *testing.T) {
+	dir := t.TempDir()
+	for i, content := range []string{
+		testPrivHex + "\nx",
+		testPrivHex + "\n" + testPrivHex,
+		" " + testPrivHex,
+		testPrivHex[:63] + "\n",
+		testPrivHex + strings.Repeat(" ", maxPrivateKeyFileSize-63),
+	} {
+		path := filepath.Join(dir, fmt.Sprintf("nodekey-%d", i))
+		require.NoError(t, os.WriteFile(path, []byte(content), 0600))
+
+		_, err := LoadECDSA(path)
+		require.ErrorContains(t, err, "invalid private key file length", "content %q", content)
+	}
 }
 
 func TestValidateSignatureValues(t *testing.T) {
