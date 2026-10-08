@@ -22,7 +22,7 @@ type Voting struct {
 	Balance                         decimal.Decimal  `json:"balance"`
 	Stake                           decimal.Decimal  `json:"stake"`
 	Fact                            hexutil.Bytes    `json:"fact"`
-	VoteProofsCount                 uint64           `json:"ballotsCount"`
+	VoteProofsCount                 uint64           `json:"voteProofsCount"`
 	SecretVotesCount                uint64           `json:"secretVotesCount"`
 	VotesCount                      uint64           `json:"votesCount"`
 	Votes                           []*OptionVotes   `json:"votes,omitempty"`

@@ -334,6 +334,21 @@ func TestListFiltersAndPages(t *testing.T) {
 	require.Error(t, err)
 }
 
+// A voting keeps the field names of the indexer's OracleVotingContract, which the desktop reads.
+func TestVotingFieldNames(t *testing.T) {
+	data, err := json.Marshal(&Voting{})
+	require.NoError(t, err)
+	var fields map[string]interface{}
+	require.NoError(t, json.Unmarshal(data, &fields))
+	for _, name := range []string{"contractAddress", "author", "balance", "stake", "fact", "voteProofsCount",
+		"secretVotesCount", "votesCount", "state", "createTime", "startTime", "quorum", "committeeSize",
+		"votingDuration", "publicVotingDuration", "winnerThreshold", "ownerFee", "isOracle", "epochWithoutGrowth",
+		"hash"} {
+		require.Contains(t, fields, name)
+	}
+	require.NotContains(t, fields, "ballotsCount")
+}
+
 // signedTx is a contract call from a fresh key.
 func signedTx(t *testing.T, txType types.TxType, to common.Address, amount *big.Int) (*types.Transaction, common.Address) {
 	key, _ := crypto.GenerateKey()
