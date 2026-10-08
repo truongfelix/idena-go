@@ -220,16 +220,37 @@ func (m *ConnManager) AddConnection(conn network.Conn) {
 		}
 		time.Sleep(time.Second * 5)
 
-		m.connMutex.Lock()
-		m.activeConnections[id] = conn
-		m.connMutex.Unlock()
+		m.storeConnection(conn)
 	}()
 }
 
-func (m *ConnManager) RemoveConnection(conn network.Conn) {
+// storeConnection makes conn its peer's dial candidate, unless it closed while AddConnection waited: its
+// Disconnected notification has then come already and nothing would remove it.
+func (m *ConnManager) storeConnection(conn network.Conn) {
 	m.connMutex.Lock()
-	delete(m.activeConnections, conn.RemotePeer())
-	m.connMutex.Unlock()
+	defer m.connMutex.Unlock()
+	if conn.IsClosed() {
+		return
+	}
+	m.activeConnections[conn.RemotePeer()] = conn
+}
+
+// RemoveConnection forgets a closed connection. A peer can have several at once (a relayed one and the direct one
+// hole punching opened, or two simultaneous dials): it stays a dial candidate while another one is open.
+func (m *ConnManager) RemoveConnection(conn network.Conn) {
+	id := conn.RemotePeer()
+	m.connMutex.Lock()
+	defer m.connMutex.Unlock()
+	if stored, ok := m.activeConnections[id]; !ok || stored != conn {
+		return
+	}
+	for _, c := range m.host.Network().ConnsToPeer(id) {
+		if c != conn && !c.IsClosed() {
+			m.activeConnections[id] = c
+			return
+		}
+	}
+	delete(m.activeConnections, id)
 }
 
 func (m *ConnManager) CanAcceptStream() bool {
