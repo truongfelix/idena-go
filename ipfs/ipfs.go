@@ -718,6 +718,9 @@ func configureIpfs(cfg *config.IpfsConfig, eventBus eventbus.Bus) (*ipfsConf.Con
 			return nil, err
 		}
 	} else {
+		if err := upgradeLegacyRepo(datadir); err != nil {
+			return nil, errors.Wrap(err, "cannot upgrade the IPFS repository")
+		}
 		ipfsConfig, err = configAt(datadir)
 		if err != nil {
 			return nil, errors.Wrap(err, "cannot load existing IPFS repository config; refusing automatic replacement")
