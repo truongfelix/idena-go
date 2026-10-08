@@ -223,6 +223,11 @@ func NewNodeWithInjections(config *config.Config, bus eventbus.Bus, statsCollect
 	if err != nil {
 		return nil, err
 	}
+	directPeers, err := config.P2P.DirectPeerInfos()
+	if err != nil {
+		return nil, err
+	}
+	ipfsProxy.KeepConnected(directPeers)
 	validation.SetAppConfig(config)
 	keyStore := keystore.NewKeyStore(keyStoreDir, keystore.StandardScryptN, keystore.StandardScryptP)
 	secStore := secstore.NewSecStore()

@@ -226,6 +226,7 @@ func (h *IdenaGossipHandler) background() {
 		select {
 		case <-dialTicker.C:
 			h.dialPeers()
+			h.dialDirectPeers()
 		case <-renewTicker.C:
 			h.renewPeers()
 		}
@@ -519,8 +520,9 @@ func (h *IdenaGossipHandler) handle(p *protoPeer) error {
 }
 
 func (h *IdenaGossipHandler) acceptStream(stream network.Stream) {
-	if h.connManager.CanConnect(stream.Conn().RemotePeer()) && (h.connManager.CanAcceptStream() ||
-		h.connManager.NeedInboundOwnShardPeers() || h.connManager.NeedPeerFromSomeShard(int(h.bcn.ShardsNum()))) {
+	if h.connManager.CanConnect(stream.Conn().RemotePeer()) && (h.connManager.IsDirectPeer(stream.Conn().RemotePeer()) ||
+		h.connManager.CanAcceptStream() || h.connManager.NeedInboundOwnShardPeers() ||
+		h.connManager.NeedPeerFromSomeShard(int(h.bcn.ShardsNum()))) {
 		if _, err := h.runPeer(stream, true); err != nil {
 			h.log.Debug("failed to run inbound peer", "err", err)
 		}
@@ -573,7 +575,12 @@ func (h *IdenaGossipHandler) runPeer(stream network.Stream, inbound bool) (*prot
 		return nil, err
 	}
 
-	canConnect, shouldDisconnectAnotherPeer := h.connManager.NeedPeerFromShard(inbound, peer.shardId)
+	// A direct peer (P2P.DirectPeers) takes no slot, so it is never refused for want of one.
+	direct := h.connManager.IsDirectPeer(peer.id)
+	canConnect, shouldDisconnectAnotherPeer := true, false
+	if !direct {
+		canConnect, shouldDisconnectAnotherPeer = h.connManager.NeedPeerFromShard(inbound, peer.shardId)
+	}
 
 	if !canConnect {
 		log.Info("no slots for shard, peer will be disconnected", "peerId", peer.id, "shardId", peer.shardId)
@@ -611,7 +618,7 @@ func (h *IdenaGossipHandler) runPeer(stream network.Stream, inbound bool) (*prot
 
 	h.sendManifest(peer)
 
-	h.log.Info("Peer connected", "id", peer.id.String(), "inbound", inbound, "shardId", peer.shardId)
+	h.log.Info("Peer connected", "id", peer.id.String(), "inbound", inbound, "shardId", peer.shardId, "direct", direct)
 	if shouldDisconnectAnotherPeer {
 		h.log.Info("Selected to dc", "id", dcPeer, "shardId", dcShard)
 	}

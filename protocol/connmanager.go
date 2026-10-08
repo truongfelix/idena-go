@@ -32,6 +32,10 @@ type ConnManager struct {
 	inboundPeers  map[peer.ID]common.ShardId
 	outboundPeers map[peer.ID]common.ShardId
 
+	// directPeers are the nodes named in P2P.DirectPeers. They stay out of inboundPeers and outboundPeers, which
+	// every slot count and every disconnect choice reads: never refused for want of a slot, never picked to make room.
+	directPeers map[peer.ID]struct{}
+
 	peerMutex sync.RWMutex
 	connMutex sync.Mutex
 	host      core.Host
@@ -41,6 +45,12 @@ type ConnManager struct {
 }
 
 func NewConnManager(host core.Host, cfg config.P2P) *ConnManager {
+	directPeers := make(map[peer.ID]struct{})
+	// The config was validated when it was made: an invalid list cannot reach this point.
+	infos, _ := cfg.DirectPeerInfos()
+	for _, info := range infos {
+		directPeers[info.ID] = struct{}{}
+	}
 	return &ConnManager{
 		host:              host,
 		cfg:               cfg,
@@ -48,9 +58,25 @@ func NewConnManager(host core.Host, cfg config.P2P) *ConnManager {
 		activeConnections: make(map[peer.ID]network.Conn),
 		inboundPeers:      make(map[peer.ID]common.ShardId),
 		outboundPeers:     make(map[peer.ID]common.ShardId),
+		directPeers:       directPeers,
 		discTimes:         make(map[peer.ID]time.Time),
 		resetTimes:        make(map[peer.ID]time.Time),
 	}
+}
+
+// IsDirectPeer tells whether id is named in P2P.DirectPeers.
+func (m *ConnManager) IsDirectPeer(id peer.ID) bool {
+	_, ok := m.directPeers[id]
+	return ok
+}
+
+// DirectPeers lists the nodes named in P2P.DirectPeers.
+func (m *ConnManager) DirectPeers() []peer.ID {
+	ids := make([]peer.ID, 0, len(m.directPeers))
+	for id := range m.directPeers {
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 func (m *ConnManager) CanConnect(id peer.ID) bool {
@@ -83,6 +109,9 @@ func (m *ConnManager) CanConnect(id peer.ID) bool {
 }
 
 func (m *ConnManager) Connected(id peer.ID, inbound bool, shardId common.ShardId) {
+	if m.IsDirectPeer(id) {
+		return
+	}
 	m.peerMutex.Lock()
 	defer m.peerMutex.Unlock()
 	if inbound {
