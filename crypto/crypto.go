@@ -17,6 +17,7 @@
 package crypto
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -32,6 +33,9 @@ import (
 	"github.com/idena-network/idena-go/common/math"
 	"github.com/idena-network/idena-go/crypto/sha3"
 )
+
+// maxPrivateKeyFileSize bounds a key file: 64 hex characters, then at most some trailing whitespace.
+const maxPrivateKeyFileSize = 128
 
 var (
 	secp256k1N, _  = new(big.Int).SetString("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141", 16)
@@ -176,11 +180,17 @@ func LoadECDSA(file string) (*ecdsa.PrivateKey, error) {
 		return nil, err
 	}
 
-	encoded, err := io.ReadAll(io.LimitReader(fd, 65))
+	content, err := io.ReadAll(io.LimitReader(fd, maxPrivateKeyFileSize+1))
 	if err != nil {
 		return nil, err
 	}
-	defer zeroBytes(encoded)
+	defer zeroBytes(content)
+	if len(content) > maxPrivateKeyFileSize {
+		return nil, fmt.Errorf("invalid private key file length: more than %d bytes", maxPrivateKeyFileSize)
+	}
+	// The official node reads the first 64 characters of the file, so a key file written by hand or saved by an
+	// editor can end with a line break: trailing whitespace is ignored, any other trailing data is refused.
+	encoded := bytes.TrimRight(content, " \t\r\n")
 	if len(encoded) != 64 {
 		return nil, fmt.Errorf("invalid private key file length: got %d, want 64", len(encoded))
 	}
