@@ -47,9 +47,21 @@ type Config struct {
 	Blockchain       *BlockchainConfig
 	Mempool          *Mempool
 	Database         *DatabaseConfig
+
+	// nodeKey is the node key given by the app that runs the node (UseNodeKey); nil: the key file.
+	nodeKey *ecdsa.PrivateKey
+}
+
+// UseNodeKey makes key the node key: NodeKey returns it, and neither NodeKey nor ProvideNodeKey reads or writes the
+// key file. An app that keeps the key itself (the Android app keeps it encrypted) gives it this way.
+func (c *Config) UseNodeKey(key *ecdsa.PrivateKey) {
+	c.nodeKey = key
 }
 
 func (c *Config) ProvideNodeKey(key string, password string, withBackup bool) error {
+	if c.nodeKey != nil {
+		return errors.New("the node key is kept by the app that runs the node")
+	}
 	instanceDir := filepath.Join(c.DataDir, "keystore")
 	if err := fileutil.EnsurePrivateDir(instanceDir); err != nil {
 		return err
@@ -104,6 +116,9 @@ func (c *Config) ProvideNodeKey(key string, password string, withBackup bool) er
 }
 
 func (c *Config) NodeKey() (*ecdsa.PrivateKey, error) {
+	if c.nodeKey != nil {
+		return c.nodeKey, nil
+	}
 	// Generate ephemeral key if no datadir is being used.
 	if c.DataDir == "" {
 		key, err := crypto.GenerateKey()

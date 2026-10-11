@@ -1,6 +1,7 @@
 package node
 
 import (
+	"crypto/ecdsa"
 	"fmt"
 	"github.com/idena-network/idena-go/api"
 	"github.com/idena-network/idena-go/blockchain"
@@ -130,6 +131,12 @@ func (checker *ceremonyChecker) IsRunning() bool {
 }
 
 func StartMobileNode(path string, cfg string) string {
+	return StartMobileNodeWithKey(path, cfg, nil)
+}
+
+// StartMobileNodeWithKey starts the node as StartMobileNode does, with key as its node key when key is not nil: the
+// app that runs the node keeps the key, and the node neither reads nor writes the key file (config.Config.UseNodeKey).
+func StartMobileNodeWithKey(path string, cfg string, key *ecdsa.PrivateKey) string {
 	if err := os.MkdirAll(path, 0700); err != nil {
 		return err.Error()
 	}
@@ -143,6 +150,9 @@ func StartMobileNode(path string, cfg string) string {
 
 	if err != nil {
 		return err.Error()
+	}
+	if key != nil {
+		c.UseNodeKey(key)
 	}
 
 	n, err := NewNode(c, "mobile")

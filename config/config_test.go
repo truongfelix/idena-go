@@ -287,6 +287,59 @@ func TestNodeKeyTightensLegacyPermissions(t *testing.T) {
 	require.Equal(t, os.FileMode(0600), keyInfo.Mode().Perm())
 }
 
+func TestUseNodeKeyLeavesTheKeyFileAlone(t *testing.T) {
+	appKey, err := crypto.GenerateKey()
+	require.NoError(t, err)
+
+	// No key file: none is written.
+	cfg := getDefaultConfig(t.TempDir())
+	cfg.UseNodeKey(appKey)
+	loaded, err := cfg.NodeKey()
+	require.NoError(t, err)
+	require.Equal(t, crypto.FromECDSA(appKey), crypto.FromECDSA(loaded))
+	require.NoFileExists(t, filepath.Join(cfg.DataDir, "keystore", datadirPrivateKey))
+
+	// A key file: it is neither used nor changed.
+	cfg = getDefaultConfig(t.TempDir())
+	fileKey, err := crypto.GenerateKey()
+	require.NoError(t, err)
+	keyfile := filepath.Join(cfg.DataDir, "keystore", datadirPrivateKey)
+	require.NoError(t, os.MkdirAll(filepath.Dir(keyfile), 0700))
+	require.NoError(t, crypto.SaveECDSA(keyfile, fileKey))
+	before, err := os.ReadFile(keyfile)
+	require.NoError(t, err)
+	cfg.UseNodeKey(appKey)
+	loaded, err = cfg.NodeKey()
+	require.NoError(t, err)
+	require.Equal(t, crypto.FromECDSA(appKey), crypto.FromECDSA(loaded))
+	after, err := os.ReadFile(keyfile)
+	require.NoError(t, err)
+	require.Equal(t, before, after)
+}
+
+func TestProvideNodeKeyRefusesWhenTheAppKeepsTheKey(t *testing.T) {
+	const password = "test-password"
+	cfg := getDefaultConfig(t.TempDir())
+	appKey, err := crypto.GenerateKey()
+	require.NoError(t, err)
+	cfg.UseNodeKey(appKey)
+	importedKey, err := crypto.GenerateKey()
+	require.NoError(t, err)
+	encrypted, err := crypto.Encrypt(crypto.FromECDSA(importedKey), password)
+	require.NoError(t, err)
+
+	for _, withBackup := range []bool{false, true} {
+		err := cfg.ProvideNodeKey(hex.EncodeToString(encrypted), password, withBackup)
+		require.ErrorContains(t, err, "kept by the app")
+	}
+	files, err := filepath.Glob(filepath.Join(cfg.DataDir, "keystore", "*"))
+	require.NoError(t, err)
+	require.Empty(t, files)
+	loaded, err := cfg.NodeKey()
+	require.NoError(t, err)
+	require.Equal(t, crypto.FromECDSA(appKey), crypto.FromECDSA(loaded))
+}
+
 func assertPrivateApiKeyFile(t *testing.T, path string) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
