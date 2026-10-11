@@ -38,8 +38,21 @@ type findingKey struct {
 func main() {
 	allowReachableFlag := flag.String("allow-reachable", "", "comma-separated reachable govulncheck OSV IDs allowed by policy; use OSV@module to scope an allowance")
 	ignoreUnreachableFlag := flag.String("ignore-unreachable", "", "comma-separated module/package-only govulncheck OSV IDs ignored by policy; use OSV@module to scope an allowance")
+	replacedModulesFlag := flag.Bool("replaced-modules", false, "read go mod edit -json output and check the replaced modules' advisories instead of govulncheck JSON")
+	allowReplacedFlag := flag.String("allow-replaced", "", "comma-separated OSV@module advisories of replaced modules allowed by policy")
+	vulnDBFlag := flag.String("vulndb", "https://vuln.go.dev", "vulnerability database read by -replaced-modules")
 	flag.Parse()
 
+	if *replacedModulesFlag {
+		index, err := fetchVulnIndex(*vulnDBFlag)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to fetch the vulnerability index: %v\n", err)
+			os.Exit(2)
+		}
+		code := runReplacedCheck(os.Stdin, index, os.Stderr, *allowReplacedFlag)
+		index.Close()
+		os.Exit(code)
+	}
 	os.Exit(runFilter(os.Stdin, os.Stderr, *allowReachableFlag, *ignoreUnreachableFlag))
 }
 
