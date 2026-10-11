@@ -29,7 +29,7 @@ introduce a new chain or consensus version.
 
 ### What was updated
 
-- Go and CI were moved to Go `1.26.8`, with native builds tested on Linux,
+- Go and CI were moved to Go `1.26.9`, with native builds tested on Linux,
   macOS, and Windows, including ARM64 where supported.
 - Kubo, libp2p, cryptography, database, compression, and supporting Go modules
   were refreshed while preserving the node's existing protocol behavior.
@@ -67,7 +67,7 @@ introduce a new chain or consensus version.
 
 ## Building the source
 
-Building `idena-go` requires Go 1.26.8 and a C compiler. `idena-go` uses Go modules as a dependency manager.
+Building `idena-go` requires Go 1.26.9 and a C compiler. `idena-go` uses Go modules as a dependency manager.
 Once the dependencies are installed, run
 
 ```shell
