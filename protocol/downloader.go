@@ -87,6 +87,8 @@ type Downloader struct {
 	// failedAnnouncers holds the peers that announced a snapshot that failed in this sync: their manifests no
 	// longer count in the vote.
 	failedAnnouncers map[peer.ID]struct{}
+	// staleWait follows the wait of a stale head for a peer above it (waitForPeerAhead).
+	staleWait staleHeadWait
 }
 
 func (d *Downloader) IsSyncing() bool {
@@ -171,9 +173,13 @@ func (d *Downloader) SyncBlockchain(forkResolver ForkResolver) error {
 		head := d.chain.Head
 		d.top = getTopHeight(knownHeights)
 		if head.Height() >= d.top {
+			if d.waitForPeerAhead(head, d.chain.PreliminaryHead, time.Now()) {
+				return ErrNoPeerAhead
+			}
 			d.log.Info(fmt.Sprintf("Node is synchronized"))
 			return nil
 		}
+		d.staleWait = staleHeadWait{}
 		if !d.isSyncing {
 			d.startSync()
 			defer d.stopSync()

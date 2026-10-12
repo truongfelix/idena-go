@@ -331,6 +331,8 @@ func getDefaultConfig(dataDir string) *Config {
 			FastSync:            true,
 			ForceFullSync:       DefaultForceFullSync,
 			AllFlipsLoadingTime: time.Hour * 2,
+			StaleHeadAge:        DefaultStaleHeadAge,
+			StaleHeadWait:       DefaultStaleHeadWait,
 		},
 		OfflineDetection: GetDefaultOfflineDetectionConfig(),
 		Blockchain: &BlockchainConfig{
