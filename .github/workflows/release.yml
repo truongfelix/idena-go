@@ -44,7 +44,10 @@ jobs:
             exit 1
           fi
 
+      # A pre-release (a tag with a hyphen, v1.1.3-beta.1) is a beta without the compatibility evidence; a release
+      # needs every gate of compatibility/stack-lock.json.
       - name: Require approved compatibility evidence
+        if: ${{ !contains(github.ref_name, '-') }}
         run: bash scripts/check-release-compatibility.sh
 
       - name: Verify modules
@@ -117,6 +120,7 @@ jobs:
         run: go mod verify
 
       - name: Build
+        if: runner.os != 'Linux'
         env:
           CGO_ENABLED: 1
         run: |
@@ -124,7 +128,35 @@ jobs:
           go build -mod=readonly -trimpath -buildvcs=false \
             -ldflags "-s -w -X main.version=${VERSION}" \
             -o "builds/${ASSET_NAME}" .
-          (cd builds && openssl dgst -sha256 -r "${ASSET_NAME}" | tr -d '\r' > "${ASSET_NAME}.sha256")
+
+      # In an Ubuntu 22.04 container (glibc 2.35), with the runner's Go: built on this runner's glibc 2.39, the node
+      # requires GLIBC_2.39 and does not start on Ubuntu 22.04 or Debian 12.
+      - name: Build (Linux, in an Ubuntu 22.04 container)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p builds
+          docker run --rm \
+            -v "${PWD}:/src" -w /src \
+            -v "$(go env GOROOT):/opt/go:ro" \
+            -v "$(go env GOMODCACHE)/cache/download:/opt/goproxy:ro" \
+            -e GOPROXY="file:///opt/goproxy,https://proxy.golang.org" \
+            -e VERSION -e ASSET_NAME -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+            ubuntu:22.04@sha256:5ec03bb3441e8b0bf3b4f9cd4629a1ae763010dc3035bb8da3ae6cf026486401 \
+            bash -euo pipefail -c '
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update -qq
+              apt-get install -y -qq --no-install-recommends gcc libc6-dev ca-certificates > /dev/null
+              export PATH="/opt/go/bin:${PATH}" GOMODCACHE=/tmp/go-mod GOCACHE=/tmp/go-cache GOTOOLCHAIN=local CGO_ENABLED=1
+              go build -mod=readonly -trimpath -buildvcs=false \
+                -ldflags "-s -w -X main.version=${VERSION}" \
+                -o "builds/${ASSET_NAME}" .
+              "builds/${ASSET_NAME}" --version
+              chown -R "${HOST_UID}:${HOST_GID}" builds
+            '
+          python3 .github/scripts/check_glibc_floor.py "builds/${ASSET_NAME}" 2.35
+
+      - name: Checksum
+        run: (cd builds && openssl dgst -sha256 -r "${ASSET_NAME}" | tr -d '\r' > "${ASSET_NAME}.sha256")
 
       - name: Upload build output
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -154,6 +186,7 @@ jobs:
           merge-multiple: true
 
       - name: Verify release assets
+        if: ${{ !contains(github.ref_name, '-') }}
         run: >-
           python3 scripts/verify_release_artifacts.py
           compatibility/stack-lock.json
@@ -161,9 +194,29 @@ jobs:
           builds
           "${GITHUB_REF_NAME}"
 
+      - name: Verify pre-release assets
+        if: ${{ contains(github.ref_name, '-') }}
+        run: |
+          cd builds
+          test "$(ls -1 | wc -l)" -eq 10
+          for sum in *.sha256; do sha256sum -c "${sum}"; done
+
+      - name: Release notes and SHA256SUMS.txt
+        run: |
+          (cd builds && cat *.sha256 | sed 's/ \*/  /' | sort -k2 > ../SHA256SUMS.txt)
+          {
+            cat .github/release-notes.md
+            printf '\n## SHA-256\n\n```\n'
+            cat SHA256SUMS.txt
+            printf '```\n'
+          } > release-notes.md
+          mv SHA256SUMS.txt builds/
+
       - name: Create draft release
         uses: softprops/action-gh-release@7c4723f7a335432393329f8f1c564994ce50185d # v3
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           draft: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          body_path: release-notes.md
           files: builds/*
