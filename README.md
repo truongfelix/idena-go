@@ -8,9 +8,10 @@ Go implementation of the Idena network node.
 
 [![Build Idena](https://github.com/truongfelix/idena-go/actions/workflows/main.yml/badge.svg?branch=master)](https://github.com/truongfelix/idena-go/actions/workflows/main.yml)
 
-> This is a community-maintained compatibility and security fork. It has no
-> published binary releases. Build from a reviewed commit and verify the
-> resulting binary before using it with a valuable identity.
+> Community build of the Idena node, on the same network and consensus rules as
+> the official node 1.1.2. Test builds (pre-releases) for Linux, macOS and Windows
+> are on the [releases page](https://github.com/truongfelix/idena-go/releases), each
+> file with its SHA-256; or build from a reviewed commit.
 
 The coordinated candidate source, Wasm artifacts, toolchains, and immutable
 chain identifiers are recorded in [`compatibility/stack-lock.json`](compatibility/stack-lock.json).
@@ -18,6 +19,35 @@ That lock remains a candidate until every listed legacy differential gate has
 passed; ordinary unit tests do not by themselves authorize a release.
 The evidence format and approval procedure are documented in
 [`compatibility/README.md`](compatibility/README.md).
+
+## Community build
+
+Maintained at [github.com/truongfelix](https://github.com/truongfelix) since October 2026, after the
+[ubiubi18](https://github.com/ubiubi18) fork's hardening work (below). It is the node of the community
+[desktop app](https://github.com/truongfelix/idena-desktop) and of the Android app
+[Idena Mobile](https://github.com/truongfelix/idena-mobile), and runs on its own too. Same network, same
+consensus rules, no hard fork. What it adds:
+
+- **RPC methods the apps use**: `dna_validationSummary` (a validation's results, kept by the node),
+  `dna_identityHistory` (an identity's states over the epochs, from the node's own records), the oracle votings
+  (`contract_oracleVotings`, `contract_oracleVoting`, `contract_oracleVotingBalanceUpdates`, from a local
+  index), `bcn_contractCalls` (a contract's calls in given blocks, with whether each was accepted).
+  `bcn_txReceipt` answers `null` when there is no receipt.
+- **Sync**: full sync between fast sync turns instead of waiting for a snapshot; bounded progress per pass with
+  block answers matched to their requests; snapshots chosen by how many peers offer them, moving on from failing
+  ones; a peer's height counted only up to the blocks it serves.
+- **Peers**: peer slots and the IPFS connection manager set by flags (below); up to 3 direct peers, kept
+  connected beyond the slots; a peer stays dialable while another connection to it is open.
+- **Disk writes**: write buffers for the chain database and the IPFS datastore (`--dbwritebuffer`,
+  `--ipfswritebuffer`).
+- **Switching from the official node**: it opens the official node's data folder, upgrading its IPFS repository
+  in place (the official node then no longer opens it: copy the folder first), and accepts a key file that ends
+  with a line break.
+- **Other**: the clock check ignores NTP replies without a time; the stored consensus version is read without
+  writing to the chain database; the Android app can give the node its key in memory (`StartMobileNodeWithKey`)
+  instead of a key file. The dependency forks (wasm binding, iavl, kad-dht) come from truongfelix.
+- **Releases**: Linux binaries need glibc 2.35 or newer (Ubuntu 22.04, Debian 12); each file has a `.sha256`
+  and the release a `SHA256SUMS.txt`.
 
 ## Fork status
 
@@ -37,9 +67,9 @@ introduce a new chain or consensus version.
 - RPC API-key files and Unix IPC sockets are restricted to the current user;
   malformed RPC, P2P, protobuf, database, and fast-sync state is handled
   fail-closed instead of panicking or silently advancing state.
-- Compressed P2P messages are size-checked before decompression allocation, and
-  IPFS routing defaults to client mode unless unsafe routing is explicitly
-  enabled.
+- Compressed P2P messages are size-checked before decompression allocation.
+- The node runs the IPFS DHT in Kubo's auto mode, as the official node does: a
+  DHT server when reachable from the internet, a client otherwise.
 - CI runs focused race-detector tests, static analysis, cross-platform builds,
   and a repository-specific vulnerability policy before releases.
 
@@ -56,12 +86,11 @@ introduce a new chain or consensus version.
 
 - Dependency upgrades can still change performance, peer discovery, IPFS
   behavior, or resource usage even when consensus serialization is unchanged.
-- `GO-2024-3218` remains reachable in the reviewed
-  `go-libp2p-kad-dht v0.41.0`; the default DHT client mode reduces exposure but
-  does not remove the upstream peer-ID spoofing issue. See
+- `GO-2024-3218` (the upstream DHT advisory) applies in every DHT mode and has no
+  fix upstream; see
   [`docs/security/vulnerability-policy.md`](docs/security/vulnerability-policy.md).
-- Existing Badger-based IPFS repositories are not migrated automatically.
-  Back up the full data directory before changing versions or storage profiles.
+- Back up the full data directory before changing versions or storage profiles:
+  an IPFS repository upgraded by this node no longer opens in the official node.
 - Mixing a node binary, Wasm binding, or database copied from another revision
   is unsupported. Keep the exact source and artifact pins together.
 
@@ -94,7 +123,7 @@ To connect to the Idena mainnet, run the executable without parameters.
 * `--rpcport` RPC listening port (default `9009`)
 * `--ipfsport` IPFS P2P port (default `40405`)
 * `--ipfsportstatic` Prevent changing IPFS port (default `false`)
-* `--ipfsrouting` IPFS routing mode (default `dhtclient`; unsafe or server-capable modes require `IDENA_ALLOW_UNSAFE_IPFS_ROUTING=1`)
+* `--ipfsrouting` Routing value written to the IPFS config file (default `dhtclient`; other values require `IDENA_ALLOW_UNSAFE_IPFS_ROUTING=1`); it does not change the node's DHT mode, which is Kubo's auto mode
 * `--ipfsbootnode` Set custom bootstrap node
 * `--fast` Use fast sync (default `true`)
 * `--dbwritebuffer` Chain database write buffer in MiB (default `4`): a bigger buffer writes much less to disk (16 MiB: 40-75% less in mainnet replays) and costs about 2-4 times the added buffer in RAM; takes effect at the next start (config file: `"Database": {"WriteBufferMiB": 16}`)
@@ -122,7 +151,7 @@ To connect to the Idena mainnet, run the executable without parameters.
 
 Custom json configuration can be used if `--config=<config file name>` parameter is specified. Use `server` IPFS profile if you run `idena-go` on VPS to prevent local network scanning.
 
-New IPFS repositories use Kubo's supported `flatfs` datastore. Existing repositories keep their configured datastore and are never migrated automatically. Operators with an older Badger v1 repository should plan an export/import migration before Kubo removes Badger support; back up the IPFS data directory before any manual migration.
+New IPFS repositories use Kubo's supported `flatfs` datastore. Existing repositories keep their configured datastore. A repository made by the official node (repository version 12, Badger v1) is upgraded to the current repository version on the first start, keeping its Badger datastore and its old config as `config.v12.bak`; the official node no longer opens it afterwards. Operators with a Badger v1 repository should plan an export/import migration before Kubo removes Badger support; back up the IPFS data directory before any manual migration.
 
 ```json
 {
