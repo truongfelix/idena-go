@@ -163,6 +163,11 @@ func (engine *Engine) loop() {
 
 		if err := engine.downloader.SyncBlockchain(engine.forkResolver); err != nil {
 			engine.synced = false
+			if errors.Is(err, protocol.ErrNoPeerAhead) {
+				// The downloader logs the wait.
+				time.Sleep(time.Second * 5)
+				continue
+			}
 			if engine.forkResolver.HasLoadedFork() {
 				if revertedTxs, err := engine.forkResolver.ApplyFork(); err == nil {
 					if len(revertedTxs) > 0 {
