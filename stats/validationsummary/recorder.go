@@ -10,7 +10,6 @@ import (
 	"github.com/idena-network/idena-go/common/eventbus"
 	math2 "github.com/idena-network/idena-go/common/math"
 	"github.com/idena-network/idena-go/core/appstate"
-	"github.com/idena-network/idena-go/core/ceremony"
 	"github.com/idena-network/idena-go/core/state"
 	"github.com/idena-network/idena-go/events"
 	"github.com/idena-network/idena-go/log"
@@ -257,6 +256,15 @@ func (r *Recorder) onBlockAdded(block *types.Block) {
 	r.log.Info("Validation summaries recorded", "epoch", epoch, "identities", len(summaries))
 }
 
+// The flip results as core/ceremony's FlipStatus gives them (checked there by Test_FlipStatusValues). Not imported:
+// core/ceremony imports blockchain, whose tests import this package.
+const (
+	FlipNotQualified    = 0
+	FlipQualified       = 1
+	FlipWeaklyQualified = 2
+	FlipQualifiedByNone = 3
+)
+
 // flips counts the ceremony's flips by result, every shard included.
 func (d *ceremonyData) flips() *Flips {
 	flips := &Flips{}
@@ -270,13 +278,13 @@ func (d *ceremonyData) flips() *Flips {
 			}
 			flips.Total++
 			switch flip.Status {
-			case byte(ceremony.Qualified):
+			case FlipQualified:
 				flips.Qualified++
-			case byte(ceremony.WeaklyQualified):
+			case FlipWeaklyQualified:
 				flips.WeaklyQualified++
-			case byte(ceremony.NotQualified):
+			case FlipNotQualified:
 				flips.NotQualified++
-			case byte(ceremony.QualifiedByNone):
+			case FlipQualifiedByNone:
 				flips.QualifiedByNone++
 			}
 			if flip.Grade == types.GradeReported {

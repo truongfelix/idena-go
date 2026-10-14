@@ -9,7 +9,6 @@ import (
 	"github.com/idena-network/idena-go/common"
 	"github.com/idena-network/idena-go/common/eventbus"
 	"github.com/idena-network/idena-go/core/appstate"
-	"github.com/idena-network/idena-go/core/ceremony"
 	"github.com/idena-network/idena-go/core/state"
 	"github.com/idena-network/idena-go/events"
 	"github.com/idena-network/idena-go/stats/collector"
@@ -113,15 +112,15 @@ func Test_Recorder_ceremony(t *testing.T) {
 			},
 			FlipsPerIdx: map[int]*statsTypes.FlipStats{
 				0: {ShortAnswers: []statsTypes.FlipAnswerStats{{Respondent: verified}, {Respondent: candidate}}, LongAnswers: []statsTypes.FlipAnswerStats{{Respondent: verified}},
-					Status: byte(ceremony.Qualified), Grade: types.GradeA},
-				1: {ShortAnswers: []statsTypes.FlipAnswerStats{{Respondent: verified}}, Status: byte(ceremony.WeaklyQualified)},
-				2: {Status: byte(ceremony.NotQualified), Grade: types.GradeReported},
-				3: {Status: byte(ceremony.QualifiedByNone)},
-				4: {Status: byte(ceremony.Qualified), Grade: types.GradeReported},
+					Status: FlipQualified, Grade: types.GradeA},
+				1: {ShortAnswers: []statsTypes.FlipAnswerStats{{Respondent: verified}}, Status: FlipWeaklyQualified},
+				2: {Status: FlipNotQualified, Grade: types.GradeReported},
+				3: {Status: FlipQualifiedByNone},
+				4: {Status: FlipQualified, Grade: types.GradeReported},
 			},
 		},
 		2: {
-			FlipsPerIdx:       map[int]*statsTypes.FlipStats{0: {Status: byte(ceremony.Qualified)}},
+			FlipsPerIdx:       map[int]*statsTypes.FlipStats{0: {Status: FlipQualified}},
 			WrongGradeReasons: map[common.Address]statsTypes.WrongGradeReason{candidate: statsTypes.TooManyReports},
 		},
 	}})
