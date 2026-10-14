@@ -376,6 +376,21 @@ func (api *DnaApi) ValidationSummary(address common.Address, epoch *uint16) (*va
 	return api.summaries.Get(*epoch, address)
 }
 
+// CeremonySummary returns what the validation ceremony of the epoch (default: the last one) did as a whole, as this
+// node recorded it while applying the ceremony block (its flips by result): null in the same cases as
+// ValidationSummary.
+func (api *DnaApi) CeremonySummary(epoch *uint16) (*validationsummary.Ceremony, error) {
+	if epoch == nil {
+		current := api.baseApi.getReadonlyAppState().State.Epoch()
+		if current == 0 {
+			return nil, nil
+		}
+		last := current - 1
+		epoch = &last
+	}
+	return api.summaries.Ceremony(*epoch)
+}
+
 // IdentityHistory returns the address's history (default: the coinbase) from this node's own records: the block
 // that ended each epoch since the node's first header, what each ceremony did to the address, and for the node's
 // own addresses their mining rewards and transactions by epoch (identityhistory.History).

@@ -29,6 +29,7 @@ Maintained at [github.com/truongfelix](https://github.com/truongfelix) since Oct
 consensus rules, no hard fork. What it adds:
 
 - **RPC methods the apps use**: `dna_validationSummary` (a validation's results, kept by the node),
+  `dna_ceremonySummary` (a validation's flips by result, qualified to reported),
   `dna_identityHistory` (an identity's states over the epochs, from the node's own records), the oracle votings
   (`contract_oracleVotings`, `contract_oracleVoting`, `contract_oracleVotingBalanceUpdates`, from a local
   index), `bcn_contractCalls` (a contract's calls in given blocks, with whether each was accepted).
