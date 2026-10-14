@@ -39,6 +39,26 @@ type Summary struct {
 	DelegateeReward *DelegateeReward `json:"delegateeReward,omitempty"`
 }
 
+// Ceremony: what the validation ceremony of the epoch did as a whole.
+type Ceremony struct {
+	Epoch uint16 `json:"epoch"`
+	// Nobody was validated: identities stayed as they were and no reward was paid.
+	ValidationFailed bool `json:"validationFailed"`
+	// Flips: the ceremony's flips by result; null when the node recorded the epoch without them (an older version).
+	Flips *Flips `json:"flips"`
+}
+
+// Flips of a ceremony by the result the ceremony gave them (ceremony.FlipStatus), and those reported (grade
+// Reported), whatever their result.
+type Flips struct {
+	Total           uint32 `json:"total"`
+	Qualified       uint32 `json:"qualified"`
+	WeaklyQualified uint32 `json:"weaklyQualified"`
+	NotQualified    uint32 `json:"notQualified"`
+	QualifiedByNone uint32 `json:"qualifiedByNone"`
+	Reported        uint32 `json:"reported"`
+}
+
 // AnswersSummary: points scored on the flips that counted (qualified flips).
 type AnswersSummary struct {
 	Point      float32 `json:"point"`

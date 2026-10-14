@@ -9,6 +9,7 @@ import (
 	"github.com/idena-network/idena-go/common"
 	"github.com/idena-network/idena-go/common/eventbus"
 	"github.com/idena-network/idena-go/core/appstate"
+	"github.com/idena-network/idena-go/core/ceremony"
 	"github.com/idena-network/idena-go/core/state"
 	"github.com/idena-network/idena-go/events"
 	"github.com/idena-network/idena-go/stats/collector"
@@ -111,9 +112,16 @@ func Test_Recorder_ceremony(t *testing.T) {
 				penalized: {ShortPoint: 4, ShortFlips: 6, LongPoint: 15, LongFlips: 20, Approved: true},
 			},
 			FlipsPerIdx: map[int]*statsTypes.FlipStats{
-				0: {ShortAnswers: []statsTypes.FlipAnswerStats{{Respondent: verified}, {Respondent: candidate}}, LongAnswers: []statsTypes.FlipAnswerStats{{Respondent: verified}}},
-				1: {ShortAnswers: []statsTypes.FlipAnswerStats{{Respondent: verified}}},
+				0: {ShortAnswers: []statsTypes.FlipAnswerStats{{Respondent: verified}, {Respondent: candidate}}, LongAnswers: []statsTypes.FlipAnswerStats{{Respondent: verified}},
+					Status: byte(ceremony.Qualified), Grade: types.GradeA},
+				1: {ShortAnswers: []statsTypes.FlipAnswerStats{{Respondent: verified}}, Status: byte(ceremony.WeaklyQualified)},
+				2: {Status: byte(ceremony.NotQualified), Grade: types.GradeReported},
+				3: {Status: byte(ceremony.QualifiedByNone)},
+				4: {Status: byte(ceremony.Qualified), Grade: types.GradeReported},
 			},
+		},
+		2: {
+			FlipsPerIdx:       map[int]*statsTypes.FlipStats{0: {Status: byte(ceremony.Qualified)}},
 			WrongGradeReasons: map[common.Address]statsTypes.WrongGradeReason{candidate: statsTypes.TooManyReports},
 		},
 	}})
@@ -136,6 +144,15 @@ func Test_Recorder_ceremony(t *testing.T) {
 
 	require.Equal(t, 1, f.inner.stakingRewards)
 	require.Equal(t, 1, f.inner.completes)
+
+	// The ceremony's flips, every shard counted.
+	c, err := f.store.Ceremony(5)
+	require.NoError(t, err)
+	require.Equal(t, &Ceremony{Epoch: 5, Flips: &Flips{Total: 6, Qualified: 3, WeaklyQualified: 1, NotQualified: 1,
+		QualifiedByNone: 1, Reported: 2}}, c)
+	c, err = f.store.Ceremony(4)
+	require.NoError(t, err)
+	require.Nil(t, c)
 
 	s, err := f.store.Get(5, verified)
 	require.NoError(t, err)
@@ -254,6 +271,21 @@ func Test_Recorder_validationFailed(t *testing.T) {
 	require.True(t, s.ValidationFailed)
 	require.False(t, s.Participated)
 	require.Empty(t, s.State)
+	c, err := f.store.Ceremony(5)
+	require.NoError(t, err)
+	require.Equal(t, &Ceremony{Epoch: 5, ValidationFailed: true, Flips: &Flips{}}, c)
+}
+
+// An epoch written without its flips (by Write, as an older version recorded it) has none.
+func Test_Store_ceremonyWithoutFlips(t *testing.T) {
+	store := NewStore(db.NewMemDB())
+	require.NoError(t, store.Write(7, false, nil))
+	c, err := store.Ceremony(7)
+	require.NoError(t, err)
+	require.Equal(t, &Ceremony{Epoch: 7}, c)
+	data, err := json.Marshal(c)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"epoch":7,"validationFailed":false,"flips":null}`, string(data))
 }
 
 func Test_Store_keepsLastEpochsAndReplacesAnEpoch(t *testing.T) {

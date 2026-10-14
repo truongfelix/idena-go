@@ -10,6 +10,7 @@ import (
 	"github.com/idena-network/idena-go/common/eventbus"
 	math2 "github.com/idena-network/idena-go/common/math"
 	"github.com/idena-network/idena-go/core/appstate"
+	"github.com/idena-network/idena-go/core/ceremony"
 	"github.com/idena-network/idena-go/core/state"
 	"github.com/idena-network/idena-go/events"
 	"github.com/idena-network/idena-go/log"
@@ -249,11 +250,41 @@ func (r *Recorder) onBlockAdded(block *types.Block) {
 	epoch--
 	// The state after the block, as dna_identity shows it (a killed identity is cleared: Undefined).
 	summaries := d.summaries(epoch, r.appState.State.GetIdentityState)
-	if err := r.store.Write(epoch, d.validation.Failed, summaries); err != nil {
+	if err := r.store.WriteCeremony(epoch, d.validation.Failed, d.flips(), summaries); err != nil {
 		r.log.Error("Cannot record validation summaries", "epoch", epoch, "err", err)
 		return
 	}
 	r.log.Info("Validation summaries recorded", "epoch", epoch, "identities", len(summaries))
+}
+
+// flips counts the ceremony's flips by result, every shard included.
+func (d *ceremonyData) flips() *Flips {
+	flips := &Flips{}
+	for _, shard := range d.validation.Shards {
+		if shard == nil {
+			continue
+		}
+		for _, flip := range shard.FlipsPerIdx {
+			if flip == nil {
+				continue
+			}
+			flips.Total++
+			switch flip.Status {
+			case byte(ceremony.Qualified):
+				flips.Qualified++
+			case byte(ceremony.WeaklyQualified):
+				flips.WeaklyQualified++
+			case byte(ceremony.NotQualified):
+				flips.NotQualified++
+			case byte(ceremony.QualifiedByNone):
+				flips.QualifiedByNone++
+			}
+			if flip.Grade == types.GradeReported {
+				flips.Reported++
+			}
+		}
+	}
+	return flips
 }
 
 func (d *ceremonyData) summaries(epoch uint16, stateAfter func(common.Address) state.IdentityState) []*Summary {

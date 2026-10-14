@@ -20,7 +20,8 @@ var (
 )
 
 type epochRecord struct {
-	ValidationFailed bool `json:"validationFailed"`
+	ValidationFailed bool   `json:"validationFailed"`
+	Flips            *Flips `json:"flips,omitempty"`
 }
 
 // Store keeps the summaries in the node's chain database (local data, not part of the state).
@@ -117,6 +118,11 @@ func rangeEnd(epoch uint16) []byte {
 // Write replaces what was recorded for the epoch (a reset can apply its ceremony block again) and deletes the
 // epochs older than KeptEpochs.
 func (s *Store) Write(epoch uint16, validationFailed bool, summaries []*Summary) error {
+	return s.WriteCeremony(epoch, validationFailed, nil, summaries)
+}
+
+// WriteCeremony is Write with the ceremony's flips (nil: not known).
+func (s *Store) WriteCeremony(epoch uint16, validationFailed bool, flips *Flips, summaries []*Summary) error {
 	batch := s.db.NewBatch()
 	defer batch.Close()
 
@@ -128,7 +134,7 @@ func (s *Store) Write(epoch uint16, validationFailed bool, summaries []*Summary)
 			return err
 		}
 	}
-	data, err := json.Marshal(epochRecord{ValidationFailed: validationFailed})
+	data, err := json.Marshal(epochRecord{ValidationFailed: validationFailed, Flips: flips})
 	if err != nil {
 		return err
 	}
@@ -192,6 +198,20 @@ func (s *Store) Get(epoch uint16, address common.Address) (*Summary, error) {
 		return nil, errors.Wrap(err, "read validation summary")
 	}
 	return summary, nil
+}
+
+// Ceremony returns what the epoch's ceremony did as a whole: nil when this node did not record that epoch, or no
+// longer keeps it.
+func (s *Store) Ceremony(epoch uint16) (*Ceremony, error) {
+	data, err := s.db.Get(epochKey(epoch))
+	if err != nil || data == nil {
+		return nil, err
+	}
+	var record epochRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return nil, errors.Wrap(err, "read validation summary epoch")
+	}
+	return &Ceremony{Epoch: epoch, ValidationFailed: record.ValidationFailed, Flips: record.Flips}, nil
 }
 
 // get reads the summary from the kept epochs.
