@@ -8,6 +8,7 @@ import (
 	"github.com/idena-network/idena-go/common"
 	"github.com/idena-network/idena-go/crypto"
 	"github.com/idena-network/idena-go/crypto/ecies"
+	"github.com/idena-network/idena-go/crypto/eciesjs"
 	"github.com/idena-network/idena-go/crypto/vrf/p256"
 	"os"
 )
@@ -83,6 +84,12 @@ func (s *SecStore) ExportKey(password string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(encrypted), nil
+}
+
+// DecryptSocialMessage decrypts an idena.social message part (eciesjs format) sent to the node's key.
+func (s *SecStore) DecryptSocialMessage(payload []byte) ([]byte, error) {
+	sec, _ := crypto.ToECDSA(s.buffer.Bytes())
+	return eciesjs.Decrypt(sec, payload)
 }
 
 func (s *SecStore) DecryptMessage(data []byte) ([]byte, error) {

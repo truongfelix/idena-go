@@ -1,0 +1,14 @@
+[
+ {
+  "privateKey": "0101010101010101010101010101010101010101010101010101010101010101",
+  "publicKey": "041b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f70beaf8f588b541507fed6a642c5ab42dfdf8120a7f639de5122d47a69a8e8d1",
+  "message": "[[\"0xaa\",\"0xbb\"],\"\",\"hello\",\"\"]",
+  "payload": "BKFf87LyV2NJ2dAfBL6nOKTevLhTcrnh/h7iAhfk5PeHocaSR7uy4qL98exEIl6+vrFJkHvlRwhoMRaxp+419VUBn9MxYy6O3y8FFoKtk7hUmcVRVq1zt3FHb6S2L6zW8rCUS/+m/BhWgAwjHKOMlpmf34tqFmodFm83PrNNsMA="
+ },
+ {
+  "privateKey": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+  "publicKey": "0449f49fbf265da4d4d59f0de786351d040c895c2a9dc6ca7422a40958e1d71baacb07d3a82bc5fd8dc8a966bc54cb785f84771b901fa7785e6b6531e84a8e9c73",
+  "message": "Grüße, ❤️ and a longer text Grüße, ❤️ and a longer text Grüße, ❤️ and a longer text Grüße, ❤️ and a longer text Grüße, ❤️ and a longer text ",
+  "payload": "BMMnL+sMp3T2cf/KpjYHF84gEYUFYTtNNG7EoKMcArGakL3nwx1LgCxIwaTLP0D24JG5ko8/V63+leY23bVnpUkJxhZOmApXQU06+34NfaZqEkaOOoNFiYtOhIBo0E69c96OezizUQkNKzsBOwtzB4+tPtJ7xRL0p8p4Ijrcv7PxYuBVO6up3JpYwE+3SZ5igXl1farUrbzBipm012KlNSbfUGLaiCHXhOF/gl0YcVsW/ZD98oBT/VXU06rKtj/An43WzjHMaK00KvDEJF70/PkMdXzdN6mgOEXrEawHErU8cWJ+3DnHgRVBKjkxQUIgo2Xcq2jSExubTqQZ7iszItxo06VG9K3tox/t"
+ }
+]
