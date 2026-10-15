@@ -32,7 +32,9 @@ consensus rules, no hard fork. What it adds:
   `dna_ceremonySummary` (a validation's flips by result, qualified to reported),
   `dna_identityHistory` (an identity's states over the epochs, from the node's own records), the oracle votings
   (`contract_oracleVotings`, `contract_oracleVoting`, `contract_oracleVotingBalanceUpdates`, from a local
-  index), `bcn_contractCalls` (a contract's calls in given blocks, with whether each was accepted).
+  index), `bcn_contractCalls` (a contract's calls in given blocks, with whether each was accepted),
+  `social_encrypt` / `social_decrypt` (idena.social private messages in its format, the node's key staying in
+  the node).
   `bcn_txReceipt` answers `null` when there is no receipt.
 - **Sync**: full sync between fast sync turns instead of waiting for a snapshot; bounded progress per pass with
   block answers matched to their requests; snapshots chosen by how many peers offer them, moving on from failing

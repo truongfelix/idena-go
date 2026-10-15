@@ -721,5 +721,11 @@ func (node *Node) apis() []rpc.API {
 			Service:   api.NewContractApi(baseApi, node.blockchain, node.deferJob, node.subManager, node.oracleVotings),
 			Public:    true,
 		},
+		{
+			Namespace: "social",
+			Version:   "1.0",
+			Service:   api.NewSocialApi(baseApi),
+			Public:    true,
+		},
 	}
 }
