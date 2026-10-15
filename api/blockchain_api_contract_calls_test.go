@@ -57,6 +57,9 @@ func TestContractCallsOf(t *testing.T) {
 	require.Equal(t, 1, calls[0].Index, "the position of the transaction in the block")
 	require.Equal(t, post.Hash(), calls[0].Hash)
 	require.Equal(t, sender, calls[0].From, "the sender, recovered from the signature")
+	require.Equal(t, hexutil.Bytes(crypto.FromECDSAPub(&key.PublicKey)), calls[0].SenderPubKey,
+		"the sender's public key, recovered from the signature (65 bytes): a key to encrypt a message for")
+	require.Equal(t, calls[0].SenderPubKey, calls[1].SenderPubKey)
 	require.Equal(t, "0.00001", calls[0].Amount.String())
 	require.Equal(t, "makePost", calls[0].Method)
 	require.Equal(t, []hexutil.Bytes{[]byte(`{"message":"hello"}`)}, calls[0].Args)

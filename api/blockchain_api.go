@@ -205,18 +205,21 @@ type ContractCallsArgs struct {
 }
 
 // ContractCall is a call of a contract as a block holds it: the transaction at Index in the block at Height,
-// its sender, the coins sent with it, the method and its arguments, and whether the contract accepted it (its
-// receipt's success).
+// its sender and the sender's public key (both recovered from the signature: a key to encrypt for, also for an
+// address that is no identity), the coins sent with it, the method and its arguments, and whether the contract
+// accepted it (its receipt's success).
 type ContractCall struct {
-	Height    uint64          `json:"height"`
-	Timestamp int64           `json:"timestamp"`
-	Index     int             `json:"index"`
-	Hash      common.Hash     `json:"hash"`
-	From      common.Address  `json:"from"`
-	Amount    decimal.Decimal `json:"amount"`
-	Method    string          `json:"method"`
-	Args      []hexutil.Bytes `json:"args"`
-	Success   bool            `json:"success"`
+	Height    uint64         `json:"height"`
+	Timestamp int64          `json:"timestamp"`
+	Index     int            `json:"index"`
+	Hash      common.Hash    `json:"hash"`
+	From      common.Address `json:"from"`
+	// SenderPubKey is the sender's public key, 65 bytes uncompressed.
+	SenderPubKey hexutil.Bytes   `json:"senderPubKey"`
+	Amount       decimal.Decimal `json:"amount"`
+	Method       string          `json:"method"`
+	Args         []hexutil.Bytes `json:"args"`
+	Success      bool            `json:"success"`
 }
 
 // ContractCalls returns the calls of args.Contract in the blocks at args.Heights (at most
@@ -314,19 +317,24 @@ func contractCallsOf(block *types.Block, contract common.Address) []ContractCall
 		if err != nil {
 			continue
 		}
+		pubKey, err := types.SenderPubKey(tx)
+		if err != nil {
+			continue
+		}
 		args := make([]hexutil.Bytes, len(attachment.Args))
 		for j, arg := range attachment.Args {
 			args[j] = arg
 		}
 		calls = append(calls, ContractCall{
-			Height:    block.Height(),
-			Timestamp: block.Header.Time(),
-			Index:     i,
-			Hash:      tx.Hash(),
-			From:      sender,
-			Amount:    blockchain.ConvertToFloat(tx.AmountOrZero()),
-			Method:    attachment.Method,
-			Args:      args,
+			Height:       block.Height(),
+			Timestamp:    block.Header.Time(),
+			Index:        i,
+			Hash:         tx.Hash(),
+			From:         sender,
+			SenderPubKey: pubKey,
+			Amount:       blockchain.ConvertToFloat(tx.AmountOrZero()),
+			Method:       attachment.Method,
+			Args:         args,
 		})
 	}
 	return calls
