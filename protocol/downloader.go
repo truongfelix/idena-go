@@ -95,12 +95,14 @@ func (d *Downloader) IsSyncing() bool {
 	return d.isSyncing
 }
 
+// SyncProgress returns the height reached (the chain, or the fast sync headers above it) and the highest height
+// known. The peers' top can be lower than the headers: a peer in fast sync announces its chain, not its headers.
 func (d *Downloader) SyncProgress() (head uint64, top uint64) {
 	height := d.chain.Head.Height()
 	if d.chain.PreliminaryHead != nil {
 		height = math.Max(height, d.chain.PreliminaryHead.Height())
 	}
-	return height, d.top
+	return height, math.Max(height, d.top)
 }
 
 func NewDownloader(
