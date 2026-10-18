@@ -61,7 +61,7 @@ func TestBitmap_Contains(t *testing.T) {
 	buf := new(bytes.Buffer)
 	bitmap.WriteTo(buf)
 
-	require.NoError(t, bitmap.Read(buf.Bytes()))
+	bitmap.Read(buf.Bytes())
 
 	for i := uint32(0); i < size; i++ {
 		if i%3 == 0 {
@@ -80,7 +80,7 @@ func TestBitmap_Contains(t *testing.T) {
 	buf = new(bytes.Buffer)
 	bitmap.WriteTo(buf)
 
-	require.NoError(t, bitmap.Read(buf.Bytes()))
+	bitmap.Read(buf.Bytes())
 
 	require.True(t, bitmap.Contains(1))
 
@@ -101,7 +101,7 @@ func TestBitmap_Serialize(t *testing.T) {
 	bitmap.WriteTo(buf)
 
 	bitmap2 := NewBitmap(size)
-	require.NoError(t, bitmap2.Read(buf.Bytes()))
+	bitmap2.Read(buf.Bytes())
 
 	require.True(t, bitmap.rmap.Equals(bitmap2.rmap))
 }
@@ -117,7 +117,7 @@ func TestBitmap_SerializeSparseRoaringEncoding(t *testing.T) {
 	require.Equal(t, serializeDefault, buf.Bytes()[0])
 
 	decoded := NewBitmap(size)
-	require.NoError(t, decoded.Read(buf.Bytes()))
+	decoded.Read(buf.Bytes())
 	require.True(t, bitmap.rmap.Equals(decoded.rmap))
 }
 
@@ -143,10 +143,11 @@ func TestBitmapSerializationMatchesLegacyNode(t *testing.T) {
 	require.Equal(t, "9ccd4716743d33c9efe2f3120c41ec1b3ba3f61c3ccfa7eebc5f9674cfa43303", hex.EncodeToString(digest[:]))
 }
 
-func TestBitmap_ReadRejectsMalformedData(t *testing.T) {
+func TestBitmap_ReadKeepsLegacyLenientDecoding(t *testing.T) {
 	const size = uint32(8)
 
 	outOfRange := roaring.NewBitmap()
+	outOfRange.Add(1)
 	outOfRange.Add(size)
 	outOfRangeData := new(bytes.Buffer)
 	require.NoError(t, outOfRangeData.WriteByte(serializeDefault))
@@ -154,24 +155,25 @@ func TestBitmap_ReadRejectsMalformedData(t *testing.T) {
 	require.NoError(t, err)
 
 	tests := []struct {
-		name string
-		data []byte
+		name     string
+		data     []byte
+		expected []uint32
 	}{
-		{name: "empty"},
-		{name: "unknown encoding", data: []byte{0xff}},
-		{name: "oversized encoding", data: []byte{serializeBigInt, 0, 0, 0}},
-		{name: "truncated roaring bitmap", data: []byte{serializeDefault}},
-		{name: "out of range roaring bitmap", data: outOfRangeData.Bytes()},
-		{name: "out of range big integer", data: []byte{serializeBigInt, 0x01, 0x00}},
+		{name: "empty", data: nil, expected: []uint32{}},
+		{name: "unknown encoding is read as big integer", data: []byte{0xff, 0x05}, expected: []uint32{0, 2}},
+		{name: "big integer bits beyond size are ignored", data: []byte{serializeBigInt, 0x01, 0x02}, expected: []uint32{1}},
+		{name: "truncated roaring bitmap", data: []byte{serializeDefault}, expected: []uint32{}},
+		{name: "roaring values beyond size are kept", data: outOfRangeData.Bytes(), expected: []uint32{1, size}},
+		{name: "trailing bytes are ignored", data: append(append([]byte{}, outOfRangeData.Bytes()...), 0xaa, 0xbb), expected: []uint32{1, size}},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			bitmap := NewBitmap(size)
-			bitmap.Add(1)
+			bitmap.Add(3)
 
-			require.Error(t, bitmap.Read(test.data))
-			require.True(t, bitmap.Contains(1), "failed reads must not mutate the bitmap")
+			bitmap.Read(test.data)
+			require.Equal(t, test.expected, bitmap.ToArray())
 		})
 	}
 }

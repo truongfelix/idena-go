@@ -3,6 +3,7 @@ package appstate
 import (
 	"bytes"
 	"fmt"
+	"github.com/RoaringBitmap/roaring"
 	"github.com/google/tink/go/subtle/random"
 	"github.com/idena-network/idena-go/blockchain/types"
 	"github.com/idena-network/idena-go/common"
@@ -74,7 +75,7 @@ func TestEvidenceMap_CalculateBitmap(t *testing.T) {
 	fmt.Printf("size of bitmap for %v candidates is %v bytes\n", candidatesCount, len(bytesArray))
 
 	rmap := common.NewBitmap(candidatesCount)
-	require.NoError(rmap.Read(bytesArray))
+	rmap.Read(bytesArray)
 
 	require.True(rmap.Contains(txCandidate))
 	require.False(rmap.Contains(delayedKeyAuthor))
@@ -112,7 +113,6 @@ func TestEvidenceMap_CalculateApprovedCandidates(t *testing.T) {
 	buf := new(bytes.Buffer)
 	m.WriteTo(buf)
 	maps = append(maps, buf.Bytes())
-	maps = append(maps, nil)
 
 	// second map
 	m = common.NewBitmap(candidatesCount)
@@ -140,4 +140,72 @@ func TestEvidenceMap_CalculateApprovedCandidates(t *testing.T) {
 	require.Contains(appproved, candidates[0])
 	require.Contains(appproved, candidates[2])
 
+}
+
+func encodeBitmap(size uint32, values ...uint32) []byte {
+	m := common.NewBitmap(size)
+	for _, v := range values {
+		m.Add(v)
+	}
+	buf := new(bytes.Buffer)
+	m.WriteTo(buf)
+	return buf.Bytes()
+}
+
+// Maps that read as no votes still count toward the majority, as in v1.1.2.
+func TestEvidenceMap_CalculateApprovedCandidatesCountsMapsWithoutVotes(t *testing.T) {
+	require := require.New(t)
+	em := NewEvidenceMap(eventbus.New())
+
+	const candidatesCount = 3
+	var candidates []common.Address
+	for i := 0; i < candidatesCount; i++ {
+		candidates = append(candidates, tests.GetRandAddr())
+	}
+
+	maps := [][]byte{
+		encodeBitmap(candidatesCount, 0, 1),
+		encodeBitmap(candidatesCount, 0, 1),
+		encodeBitmap(candidatesCount, 0),
+		{0x03}, // unknown encoding with no bits
+		{0x01}, // truncated roaring bitmap
+		nil,    // empty payload
+	}
+
+	// 6 maps: a candidate needs 4 votes.
+	approved := em.CalculateApprovedCandidates(candidates, maps)
+	require.Empty(approved)
+
+	// Without the maps that read as no votes, candidates 0 and 1 have a majority.
+	approved = em.CalculateApprovedCandidates(candidates, maps[:3])
+	require.Equal([]common.Address{candidates[0], candidates[1]}, approved)
+}
+
+// Maps that v1.1.2 reads although they were not written by Bitmap.WriteTo: two maps vote for candidate 0, two odd
+// maps for candidate 1. v1.1.2 counts all four maps, so neither candidate has the 3 votes it needs.
+func TestEvidenceMap_CalculateApprovedCandidatesAsV112(t *testing.T) {
+	const candidatesCount = 15
+	var candidates []common.Address
+	for i := 0; i < candidatesCount; i++ {
+		candidates = append(candidates, tests.GetRandAddr())
+	}
+	roaringWithExtraByte := new(bytes.Buffer)
+	roaringWithExtraByte.WriteByte(0x01)
+	rb := roaring.NewBitmap()
+	rb.Add(1)
+	_, err := rb.WriteTo(roaringWithExtraByte)
+	require.NoError(t, err)
+	roaringWithExtraByte.WriteByte(0xaa)
+
+	for name, odd := range map[string][]byte{
+		"first byte 0x03":             {0x03, 0x02},
+		"big-integer bit past size":   {0x02, 0x10, 0x00, 0x02},
+		"roaring bitmap + extra byte": roaringWithExtraByte.Bytes(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			em := NewEvidenceMap(eventbus.New())
+			maps := [][]byte{encodeBitmap(candidatesCount, 0), encodeBitmap(candidatesCount, 0), odd, odd}
+			require.Empty(t, em.CalculateApprovedCandidates(candidates, maps))
+		})
+	}
 }
