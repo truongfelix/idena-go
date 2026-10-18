@@ -164,6 +164,11 @@ func (k PrivateKey) Evaluate(m []byte) (index [32]byte, proof []byte) {
 }
 
 // ProofToHash asserts that proof is correct for m and outputs index.
+//
+// It returns ErrInvalidVRF for a proof the VRF equations are not defined on: a scalar s or t that is zero or not
+// below the group order, or a point the curve multiplication does not accept, gives no point; and curve.Add is not
+// defined when its two summands share an x-coordinate. A well-formed proof meets none of these, so its index is
+// unchanged.
 func (pk *PublicKey) ProofToHash(m, proof []byte) (index [32]byte, err error) {
 	nilIndex := [32]byte{}
 	// verifier checks that s == H2(m, [t]G + [s]([k]G), [t]H1(m) + [s]VRF_k(m))
@@ -185,13 +190,22 @@ func (pk *PublicKey) ProofToHash(m, proof []byte) (index [32]byte, err error) {
 	// [t]G + [s]([k]G) = [t+ks]G
 	tGx, tGy := curve.ScalarBaseMult(t)
 	ksGx, ksGy := curve.ScalarMult(pk.X, pk.Y, s)
+	if tGx == nil || ksGx == nil || tGx.Cmp(ksGx) == 0 {
+		return nilIndex, ErrInvalidVRF
+	}
 	tksGx, tksGy := curve.Add(tGx, tGy, ksGx, ksGy)
 
 	// H = H1(m)
 	// [t]H + [s]VRF = [t+ks]H
 	Hx, Hy := H1(m)
+	if Hx == nil {
+		return nilIndex, ErrInvalidVRF
+	}
 	tHx, tHy := curve.ScalarMult(Hx, Hy, t)
 	sHx, sHy := curve.ScalarMult(uHx, uHy, s)
+	if tHx == nil || sHx == nil || tHx.Cmp(sHx) == 0 {
+		return nilIndex, ErrInvalidVRF
+	}
 	tksHx, tksHy := curve.Add(tHx, tHy, sHx, sHy)
 
 	//   H2(G, H, [k]G, VRF, [t]G + [s]([k]G), [t]H + [s]VRF)
