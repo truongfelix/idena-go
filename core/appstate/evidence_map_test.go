@@ -209,3 +209,47 @@ func TestEvidenceMap_CalculateApprovedCandidatesAsV112(t *testing.T) {
 		})
 	}
 }
+
+// A map whose values also cover a wide range past the candidates gives its candidates' votes as any other map: three
+// such maps of five approve candidate 2.
+func TestEvidenceMap_CalculateApprovedCandidatesWithValuesPastCandidates(t *testing.T) {
+	const candidatesCount = 15
+	var candidates []common.Address
+	for i := 0; i < candidatesCount; i++ {
+		candidates = append(candidates, tests.GetRandAddr())
+	}
+	rb := roaring.NewBitmap()
+	rb.Add(2)
+	rb.AddRange(1<<16, 1<<16+46*65536)
+	rb.RunOptimize()
+	wide := new(bytes.Buffer)
+	wide.WriteByte(0x01)
+	_, err := rb.WriteTo(wide)
+	require.NoError(t, err)
+
+	em := NewEvidenceMap(eventbus.New())
+	maps := [][]byte{wide.Bytes(), wide.Bytes(), wide.Bytes(), nil, nil}
+	require.Equal(t, []common.Address{candidates[2]}, em.CalculateApprovedCandidates(candidates, maps))
+}
+
+// A roaring array container listing one candidate many times gives that candidate as many votes, as in v1.1.2: one
+// map of five approves candidate 5 alone.
+func TestEvidenceMap_CalculateApprovedCandidatesCountsRepeatedValue(t *testing.T) {
+	const candidatesCount = 15
+	var candidates []common.Address
+	for i := 0; i < candidatesCount; i++ {
+		candidates = append(candidates, tests.GetRandAddr())
+	}
+	repeated := new(bytes.Buffer)
+	repeated.WriteByte(0x01)
+	for _, v := range []uint32{12346, 1} { // no run containers, one container
+		repeated.Write([]byte{byte(v), byte(v >> 8), byte(v >> 16), byte(v >> 24)})
+	}
+	repeated.Write([]byte{0, 0, 2, 0}) // key 0, 3 values
+	repeated.Write([]byte{0, 0, 0, 0}) // offset
+	repeated.Write([]byte{5, 0, 5, 0, 5, 0})
+
+	em := NewEvidenceMap(eventbus.New())
+	maps := [][]byte{repeated.Bytes(), nil, nil, nil, nil}
+	require.Equal(t, []common.Address{candidates[5]}, em.CalculateApprovedCandidates(candidates, maps))
+}
