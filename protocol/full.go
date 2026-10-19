@@ -146,6 +146,7 @@ func (fs *fullSync) processBatch(batch *batch, attemptNum int) error {
 				fs.log.Error("Block header is invalid", "err", err)
 				return reload(i)
 			}
+			batch.p.setHeight(block.Header.Height())
 			fs.deferredHeaders = append(fs.deferredHeaders, blockPeer{*block, batch.p.id})
 			if block.Cert != nil && !block.Cert.Empty() {
 				if from, err := fs.applyDeferredBlocks(checkState); err != nil {
@@ -178,7 +179,7 @@ func (fs *fullSync) validateHeader(block *block, p *protoPeer) error {
 		return err
 	}
 
-	if block.Header.Flags().HasFlag(types.IdentityUpdate|types.Snapshot|types.NewGenesis) || block.Header.Height() == p.knownHeight.Read() ||
+	if block.Header.Flags().HasFlag(types.IdentityUpdate|types.Snapshot|types.NewGenesis) || block.Header.Height() == p.announcedHeight() ||
 		block.Header.ProposedHeader != nil && block.Header.ProposedHeader.Upgrade > 0 {
 		if block.Cert.Empty() {
 			return BlockCertIsMissing

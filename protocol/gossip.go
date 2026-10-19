@@ -266,7 +266,8 @@ func (h *IdenaGossipHandler) handle(p *protoPeer) error {
 		if ib, ok := h.incomeBatches.Load(p.id); ok {
 			peerBatches := ib.(*sync.Map)
 			if pb, ok := peerBatches.Load(response.BatchId); ok {
-				pb.(*batch).fill(response.Blocks, func(b *block) { p.setHeight(b.Header.Height()) })
+				// The sync raises the peer's height from the blocks whose headers check out (processBatch).
+				pb.(*batch).fill(response.Blocks, func(*block) {})
 				h.batchedLock.Lock()
 				peerBatches.Delete(response.BatchId)
 				if maputil.IsSyncMapEmpty(peerBatches) {
@@ -286,9 +287,10 @@ func (h *IdenaGossipHandler) handle(p *protoPeer) error {
 			return nil
 		}
 		p.markKey(key)
+		ok, _ := h.proposals.AddProposeProof(proposal)
 		// if peer proposes this msg it should be on `query.Round-1` height
-		p.setHeight(proposal.Round - 1)
-		if ok, _ := h.proposals.AddProposeProof(proposal); ok {
+		p.setProposalHeight(proposal.Round, ok)
+		if ok {
 			h.ProposeProof(proposal)
 		}
 	case ProposeBlock:
@@ -307,9 +309,10 @@ func (h *IdenaGossipHandler) handle(p *protoPeer) error {
 		if proposal.Block == nil || len(proposal.Signature) == 0 {
 			return nil
 		}
+		ok, _ := h.proposals.AddProposedBlock(proposal, p.id, time.Now().UTC())
 		// if peer proposes this msg it should be on `query.Round-1` height
-		p.setHeight(proposal.Block.Height() - 1)
-		if ok, _ := h.proposals.AddProposedBlock(proposal, p.id, time.Now().UTC()); ok {
+		p.setProposalHeight(proposal.Block.Height(), ok)
+		if ok {
 			h.ProposeBlock(proposal)
 		}
 	case Vote:
@@ -1083,7 +1086,7 @@ func (h *IdenaGossipHandler) PeerHeights() []uint64 {
 	result := make([]uint64, 0)
 	peers := h.peers.Peers()
 	for _, peer := range peers {
-		result = append(result, peer.knownHeight.Read())
+		result = append(result, peer.announcedHeight())
 	}
 	return result
 }

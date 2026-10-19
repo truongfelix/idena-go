@@ -327,6 +327,7 @@ func (fs *fastSync) processBatch(batch *batch, attemptNum int) error {
 				fs.log.Error("Block header is invalid", "err", err)
 				return reload(i)
 			}
+			batch.p.setHeight(block.Header.Height())
 
 			fs.deferredHeaders = append(fs.deferredHeaders, blockPeer{*block, batch.p.id})
 			if block.Cert != nil && !block.Cert.Empty() {
