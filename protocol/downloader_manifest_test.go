@@ -4,14 +4,18 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/idena-network/idena-go/blockchain"
 	"github.com/idena-network/idena-go/blockchain/types"
+	"github.com/idena-network/idena-go/common"
 	"github.com/idena-network/idena-go/common/eventbus"
 	"github.com/idena-network/idena-go/config"
 	"github.com/idena-network/idena-go/core/state"
 	"github.com/idena-network/idena-go/core/state/snapshot"
+	"github.com/idena-network/idena-go/database"
 	"github.com/idena-network/idena-go/ipfs"
 	"github.com/idena-network/idena-go/log"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -247,7 +251,13 @@ func TestDownloaderAfterFailedSnapshot(t *testing.T) {
 // servingIpfs serves data for any CID; nil data is a snapshot nobody serves.
 type servingIpfs struct {
 	ipfs.Proxy
-	data []byte
+	data     []byte
+	unpinned [][]byte
+}
+
+func (s *servingIpfs) Unpin(key []byte) error {
+	s.unpinned = append(s.unpinned, key)
+	return nil
 }
 
 func (s *servingIpfs) LoadTo(_ []byte, to io.Writer, _ context.Context, onLoading func(size, loaded int64)) error {
@@ -307,4 +317,45 @@ func TestFastSyncSnapshotFailures(t *testing.T) {
 		require.Equal(t, snapshotFailed, fs.snapshotFailure)
 		require.True(t, sm.IsInvalidManifest([]byte("x")))
 	})
+
+	// The node keeps the snapshot it has, and goes on announcing it, until a downloaded one matches its header.
+	for _, served := range []struct {
+		name string
+		data []byte
+	}{{"not served", nil}, {"not matching the header", []byte("not a snapshot")}} {
+		t.Run("a snapshot "+served.name+" keeps the previous one", func(t *testing.T) {
+			chain, appState, _, _ := blockchain.NewTestBlockchain(false, nil)
+			chainDb := db.NewMemDB()
+			datadir := t.TempDir()
+			previousFile := filepath.Join(datadir, state.SnapshotsFolder, "11360095.2.tar")
+			require.NoError(t, os.MkdirAll(filepath.Dir(previousFile), 0700))
+			require.NoError(t, os.WriteFile(previousFile, []byte("previous snapshot"), 0600))
+			previousRoot := common.Hash{0x1}
+			require.NoError(t, database.NewRepo(chainDb).WriteLastSnapshotManifest([]byte("previous"), previousRoot,
+				testSnapshotHeight-10000, previousFile))
+			node := &servingIpfs{data: served.data}
+			sm := state.NewSnapshotManager(chainDb, nil, eventbus.New(), node, &config.Config{DataDir: datadir})
+			chain.PreliminaryHead = snapshotHeader(testSnapshotHeight, types.Snapshot)
+			fs := &fastSync{
+				log:      log.New(),
+				chain:    chain.Blockchain,
+				appState: appState,
+				manifest: cidManifest(testSnapshotHeight, "x"),
+				sm:       sm,
+			}
+
+			require.Error(t, fs.postConsuming())
+
+			cid, root, height, fileName := database.NewRepo(chainDb).LastSnapshotManifest()
+			require.Equal(t, []byte("previous"), cid)
+			require.Equal(t, previousRoot, root)
+			require.Equal(t, uint64(testSnapshotHeight-10000), height)
+			require.Equal(t, previousFile, fileName)
+			require.FileExists(t, previousFile)
+			require.Empty(t, node.unpinned)
+			entries, err := os.ReadDir(filepath.Dir(previousFile))
+			require.NoError(t, err)
+			require.Len(t, entries, 1, "the download is removed")
+		})
+	}
 }
