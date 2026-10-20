@@ -50,9 +50,15 @@ func ApplyStoredConsensusVersion(cfg *config.Config) error {
 	if consVersion <= uint32(cfg.Consensus.Version) {
 		return nil
 	}
+	// A version this binary has no rules for (a newer node wrote it, or the value is damaged) stops the start: on
+	// older rules than its chain's, the node would compute other state roots.
+	targetVersion := config.ConsensusVerson(consVersion)
+	if uint32(targetVersion) != consVersion || config.ConsensusVersions[targetVersion] == nil {
+		return fmt.Errorf("unsupported stored consensus version %d", consVersion)
+	}
 	// The default configuration points to the package's default consensus config: upgrade a copy.
 	consensus := *cfg.Consensus
-	for v := consensus.Version + 1; v <= config.ConsensusVerson(consVersion); v++ {
+	for v := consensus.Version + 1; v <= targetVersion; v++ {
 		config.ApplyConsensusVersion(v, &consensus)
 	}
 	cfg.Consensus = &consensus

@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/idena-network/idena-go/config"
 	"github.com/idena-network/idena-go/database"
@@ -94,6 +95,32 @@ func TestApplyStoredConsensusVersionDoesNotDowngrade(t *testing.T) {
 
 	if cfg.Consensus.Version != config.ConsensusV12 || !cfg.Consensus.EnableUpgrade12 {
 		t.Fatalf("consensus version = %d, want %d kept", cfg.Consensus.Version, config.ConsensusV12)
+	}
+}
+
+// A stored version this binary has no rules for stops the start: a node on older rules than its chain computes other
+// state roots. A version above the uint16 range must not wrap, and the configuration stays as it was.
+func TestApplyStoredConsensusVersionRefusesAnUnknownVersion(t *testing.T) {
+	for _, version := range []uint32{uint32(config.ConsensusV12) + 1, 65535, 65536 + uint32(config.ConsensusV12)} {
+		t.Run(fmt.Sprint(version), func(t *testing.T) {
+			datadir := t.TempDir()
+			writeConsensusVersion(t, datadir, version)
+			cfg := &config.Config{DataDir: datadir, Consensus: defaultConsensusCopy()}
+
+			done := make(chan error, 1)
+			go func() { done <- ApplyStoredConsensusVersion(cfg) }()
+			select {
+			case err := <-done:
+				if err == nil {
+					t.Fatalf("ApplyStoredConsensusVersion() accepted version %d", version)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatalf("ApplyStoredConsensusVersion() did not return for version %d", version)
+			}
+			if cfg.Consensus.Version != config.ConsensusV9 {
+				t.Fatalf("consensus version = %d after the error, want %d", cfg.Consensus.Version, config.ConsensusV9)
+			}
+		})
 	}
 }
 

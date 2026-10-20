@@ -3,6 +3,7 @@ package common
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"github.com/willf/bloom"
 )
 
@@ -20,8 +21,20 @@ func NewSerializableBF(n int) *SerializableBF {
 	return &SerializableBF{bloom.From(data, K), data}
 }
 
+// maxBloomWords is the most uint64 words a filter NewSerializableBF builds can have: bloomLength caps the bit size
+// at 4096, i.e. 64 words.
+var maxBloomWords = bloomLength(1<<30) / 64
+
 func NewSerializableBFFromData(data []byte) (*SerializableBF, error) {
-	buf := make([]uint64, len(data)/binary.Size(uint64(0)))
+	// A serialized filter holds the words of a filter whose bit size comes from bloomLength, so its byte length is
+	// a power-of-two count of 8-byte words between 1 and maxBloomWords (8, 16, 32, 64, 128, 256 or 512 bytes). Any
+	// other length is malformed and returns an error.
+	wordSize := binary.Size(uint64(0))
+	words := len(data) / wordSize
+	if len(data) == 0 || len(data)%wordSize != 0 || words > maxBloomWords || words&(words-1) != 0 {
+		return nil, fmt.Errorf("invalid bloom filter length %d", len(data))
+	}
+	buf := make([]uint64, words)
 	if err := binary.Read(bytes.NewReader(data), binary.BigEndian, buf); err != nil {
 		return nil, err
 	}

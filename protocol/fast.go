@@ -422,8 +422,10 @@ func (fs *fastSync) postConsuming() (err error) {
 	}
 	fs.log.Info("Snapshot has been loaded", "height", fs.manifest.Height)
 
+	// The node keeps its last snapshot, and announces it, until the downloaded one matches the header's root.
 	file, err := os.Open(filePath)
 	if err != nil {
+		fs.sm.DiscardSnapshot(filePath)
 		return err
 	}
 	switch version {
@@ -433,10 +435,16 @@ func (fs *fastSync) postConsuming() (err error) {
 
 	file.Close()
 	if err != nil {
+		fs.sm.DiscardSnapshot(filePath)
 		fs.sm.AddInvalidManifest(fs.manifest.CidV2)
 		fs.snapshotFailure = snapshotFailed
 		//TODO : add snapshot to ban list
 		return err
+	}
+	if err := fs.sm.PromoteSnapshot(fs.manifest, filePath); err != nil {
+		// The state is loaded: the node goes on, it only keeps announcing its previous snapshot.
+		fs.log.Error("Cannot keep the downloaded snapshot", "err", err)
+		fs.sm.DiscardSnapshot(filePath)
 	}
 	if err := fs.identityStateDB.SaveForcedVersion(fs.chain.PreliminaryHead.Height()); err != nil {
 		return err
