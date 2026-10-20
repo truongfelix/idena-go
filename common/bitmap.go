@@ -2,7 +2,6 @@ package common
 
 import (
 	"bytes"
-	"fmt"
 	"math/big"
 
 	"github.com/RoaringBitmap/roaring"
@@ -52,43 +51,28 @@ func (m *Bitmap) WriteTo(buffer *bytes.Buffer) {
 	}
 }
 
-func (m *Bitmap) Read(data []byte) error {
+// Read decodes a bitmap as idena-go v1.1.2 does (common/bitmap.go at 938be81), so that every node reads an evidence
+// map to the same votes: a first byte other than serializeDefault selects the big-integer encoding, big-integer bits
+// at or above the size are left out, roaring values are kept as decoded and bytes after the roaring bitmap are
+// ignored. An empty input reads as an empty bitmap, and so does a roaring bitmap that does not decode to the end.
+// bitmap_legacy_vectors_test.go holds inputs decoded by the v1.1.2 code.
+func (m *Bitmap) Read(data []byte) {
+	m.rmap = roaring.NewBitmap()
 	if len(data) == 0 {
-		return fmt.Errorf("bitmap encoding is empty")
+		return
 	}
-	if len(data) > int(m.size/8)+2 {
-		return fmt.Errorf("bitmap encoding is too large for size %d", m.size)
+	if data[0] == serializeDefault {
+		if _, err := m.rmap.ReadFrom(bytes.NewBuffer(data[1:])); err != nil {
+			m.rmap = roaring.NewBitmap()
+		}
+		return
 	}
-
-	rmap := roaring.NewBitmap()
-	switch data[0] {
-	case serializeDefault:
-		buf := bytes.NewReader(data[1:])
-		if _, err := rmap.ReadFrom(buf); err != nil {
-			return fmt.Errorf("decode roaring bitmap: %w", err)
+	bits := new(big.Int).SetBytes(data[1:])
+	for i := uint32(0); i < m.size; i++ {
+		if bits.Bit(int(i)) == 1 {
+			m.rmap.Add(i)
 		}
-		if buf.Len() != 0 {
-			return fmt.Errorf("bitmap encoding has %d trailing bytes", buf.Len())
-		}
-		if !rmap.IsEmpty() && rmap.Maximum() >= m.size {
-			return fmt.Errorf("bitmap value %d exceeds size %d", rmap.Maximum(), m.size)
-		}
-	case serializeBigInt:
-		bits := new(big.Int).SetBytes(data[1:])
-		if bits.BitLen() > int(m.size) {
-			return fmt.Errorf("bitmap value exceeds size %d", m.size)
-		}
-		for i := uint32(0); i < m.size; i++ {
-			if bits.Bit(int(i)) == 1 {
-				rmap.Add(i)
-			}
-		}
-	default:
-		return fmt.Errorf("unknown bitmap encoding 0x%x", data[0])
 	}
-
-	m.rmap = rmap
-	return nil
 }
 
 func (m *Bitmap) ToArray() []uint32 {
