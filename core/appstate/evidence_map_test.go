@@ -253,3 +253,33 @@ func TestEvidenceMap_CalculateApprovedCandidatesCountsRepeatedValue(t *testing.T
 	maps := [][]byte{repeated.Bytes(), nil, nil, nil, nil}
 	require.Equal(t, []common.Address{candidates[5]}, em.CalculateApprovedCandidates(candidates, maps))
 }
+
+// One candidate, two-byte maps: any first byte other than 0x01 reads as a big integer, and every map counts toward
+// the majority. The results are v1.1.2's on the same maps.
+func TestEvidenceMap_CalculateApprovedCandidatesOneCandidateAsV112(t *testing.T) {
+	candidates := []common.Address{tests.GetRandAddr()}
+	vote := []byte{0x02, 0x01}
+	for _, tc := range []struct {
+		name     string
+		maps     [][]byte
+		approved bool
+	}{
+		{"a vote and a map 0xff 0x00", [][]byte{vote, {0xff, 0x00}}, false},
+		{"a vote and a map 0xff", [][]byte{vote, {0xff}}, false},
+		{"a vote and a map 0x01", [][]byte{vote, {0x01}}, false},
+		{"a vote alone", [][]byte{vote}, true},
+		{"two votes and a map 0xff 0x00", [][]byte{vote, vote, {0xff, 0x00}}, true},
+		{"a vote and a map 0x03 0x01", [][]byte{vote, {0x03, 0x01}}, true},
+		{"a vote and a map 0x00 0x01", [][]byte{vote, {0x00, 0x01}}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			em := NewEvidenceMap(eventbus.New())
+			approved := em.CalculateApprovedCandidates(candidates, tc.maps)
+			if tc.approved {
+				require.Equal(t, candidates, approved)
+			} else {
+				require.Empty(t, approved)
+			}
+		})
+	}
+}
