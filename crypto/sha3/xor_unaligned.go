@@ -11,7 +11,8 @@ package sha3
 import "unsafe"
 
 func xorInUnaligned(d *state, buf []byte) {
-	bw := (*[maxRate / 8]uint64)(unsafe.Pointer(&buf[0]))
+	// View buf as uint64 words sized to buf. The loads below are guarded by n and read only words within buf.
+	bw := unsafe.Slice((*uint64)(unsafe.Pointer(&buf[0])), len(buf)/8)
 	n := len(buf)
 	if n >= 72 {
 		d.a[0] ^= bw[0]
