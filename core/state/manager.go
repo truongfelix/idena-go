@@ -1,7 +1,9 @@
 package state
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"github.com/idena-network/idena-go/blockchain/types"
 	"github.com/idena-network/idena-go/common"
@@ -14,10 +16,13 @@ import (
 	"github.com/idena-network/idena-go/log"
 	"github.com/ipfs/go-cid"
 	dbm "github.com/tendermint/tm-db"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -35,7 +40,15 @@ var (
 	// MaxSnapshotDownloadTime ends a snapshot download that still receives data: the idle timeout alone lets a
 	// download that trickles hold the sync for as long as it trickles.
 	MaxSnapshotDownloadTime = 20 * time.Minute
+	// MaxSnapshotSize ends a snapshot download that goes past it. A mainnet snapshot was 13 MB in October 2026: the
+	// bound leaves the chain's state room to grow many times over and keeps a download from filling the disk.
+	MaxSnapshotSize int64 = 1 << 30
+
+	ErrSnapshotTooLarge = errors.New("snapshot is larger than the size limit")
 )
+
+// downloadSuffix names a snapshot file being downloaded, until PromoteSnapshot gives it the name of a kept one.
+const downloadSuffix = ".download"
 
 type SnapshotManager struct {
 	db        dbm.DB
@@ -67,13 +80,18 @@ func NewSnapshotManager(db dbm.DB, state *StateDB, bus eventbus.Bus, ipfs ipfs.P
 	return m
 }
 
+func snapshotFilePath(datadir string, height uint64, version SnapshotVersion) string {
+	return filepath.Join(datadir, SnapshotsFolder, strconv.FormatUint(height, 10)+"."+strconv.FormatInt(int64(version), 10)+".tar")
+}
+
 func createSnapshotFile(datadir string, height uint64, version SnapshotVersion) (fileName string, file *os.File, err error) {
-	newpath := filepath.Join(datadir, SnapshotsFolder)
-	if err := os.MkdirAll(newpath, 0700); err != nil {
+	return createFileInSnapshotFolder(datadir, snapshotFilePath(datadir, height, version))
+}
+
+func createFileInSnapshotFolder(datadir string, filePath string) (fileName string, file *os.File, err error) {
+	if err := os.MkdirAll(filepath.Join(datadir, SnapshotsFolder), 0700); err != nil {
 		return "", nil, err
 	}
-
-	filePath := filepath.Join(newpath, strconv.FormatUint(height, 10)+"."+strconv.FormatInt(int64(version), 10)+".tar")
 	f, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return "", nil, err
@@ -134,7 +152,13 @@ func (m *SnapshotManager) createSnapshot(height uint64) (root common.Hash) {
 }
 
 func (m *SnapshotManager) clearFs(excludedFiles []string) {
-	if prevCidV2, _, _, _ := m.repo.LastSnapshotManifest(); prevCidV2 != nil {
+	m.clearFsFor(nil, excludedFiles)
+}
+
+// clearFsFor unpins the last snapshot unless it is the one with cid newCidV2, and removes every file of the snapshot
+// folder but excludedFiles.
+func (m *SnapshotManager) clearFsFor(newCidV2 []byte, excludedFiles []string) {
+	if prevCidV2, _, _, _ := m.repo.LastSnapshotManifest(); prevCidV2 != nil && !bytes.Equal(prevCidV2, newCidV2) {
 		m.ipfs.Unpin(prevCidV2)
 	}
 	m.clearSnapshotFolder(excludedFiles)
@@ -179,9 +203,14 @@ func (m *SnapshotManager) writeLastManifest(snapshotCidV2 []byte, root common.Ha
 	m.repo.WriteLastSnapshotManifest(snapshotCidV2, root, height, fileV2)
 }
 
+// DownloadSnapshot downloads the snapshot of the manifest into a file of its own, and leaves the node's last snapshot
+// as it is: the caller checks the file against the header's root, then keeps it with PromoteSnapshot or drops it with
+// DiscardSnapshot. On an error the file is already removed. A download stops when nothing arrives for a minute, after
+// MaxSnapshotDownloadTime, or past MaxSnapshotSize.
 func (m *SnapshotManager) DownloadSnapshot(snapshot *snapshot.Manifest) (filePath string, version SnapshotVersion, err error) {
 	version = SnapshotVersionV2
-	filePath, file, err := createSnapshotFile(m.cfg.DataDir, snapshot.Height, version)
+	filePath, file, err := createFileInSnapshotFolder(m.cfg.DataDir,
+		snapshotFilePath(m.cfg.DataDir, snapshot.Height, version)+downloadSuffix)
 	if err != nil {
 		return "", 0, err
 	}
@@ -192,7 +221,13 @@ func (m *SnapshotManager) DownloadSnapshot(snapshot *snapshot.Manifest) (filePat
 	lastLoad := time.Now()
 	lock := sync.Mutex{}
 	logLevels := []float32{0.15, 0.3, 0.5, 0.75}
+	var tooLarge atomic.Bool
 	onLoading := func(size, read int64) {
+		if size > MaxSnapshotSize {
+			tooLarge.Store(true)
+			cancel()
+			return
+		}
 		lock.Lock()
 		lastLoad = time.Now()
 		lock.Unlock()
@@ -209,7 +244,7 @@ func (m *SnapshotManager) DownloadSnapshot(snapshot *snapshot.Manifest) (filePat
 	done := make(chan struct{})
 
 	go func() {
-		loadToErr = m.ipfs.LoadTo(snapshot.CidV2, file, ctx, onLoading)
+		loadToErr = m.ipfs.LoadTo(snapshot.CidV2, &limitedWriter{w: file, left: MaxSnapshotSize}, ctx, onLoading)
 		wg.Done()
 		close(done)
 	}()
@@ -233,21 +268,55 @@ func (m *SnapshotManager) DownloadSnapshot(snapshot *snapshot.Manifest) (filePat
 	}()
 
 	wg.Wait()
+	cancel()
 	if err := file.Close(); err != nil && loadToErr == nil {
 		loadToErr = err
 	}
-
-	if loadToErr == nil {
-		m.clearFs([]string{filePath})
-		var filePath2 string
-
-		if version == SnapshotVersionV2 {
-			filePath2 = filePath
-		}
-		m.writeLastManifest(snapshot.CidV2, snapshot.Root, snapshot.Height, filePath2)
+	if tooLarge.Load() || errors.Is(loadToErr, ErrSnapshotTooLarge) {
+		loadToErr = ErrSnapshotTooLarge
 	}
+	if loadToErr != nil {
+		m.DiscardSnapshot(filePath)
+		return "", version, loadToErr
+	}
+	return filePath, version, nil
+}
 
-	return filePath, version, loadToErr
+// PromoteSnapshot keeps a snapshot downloaded by DownloadSnapshot, once checked against its header's root, in place of
+// the node's last snapshot: the node announces it from then on.
+func (m *SnapshotManager) PromoteSnapshot(snapshot *snapshot.Manifest, downloadedFile string) error {
+	filePath := strings.TrimSuffix(downloadedFile, downloadSuffix)
+	if filePath == downloadedFile {
+		return errors.New("not a downloaded snapshot file")
+	}
+	if err := os.Rename(downloadedFile, filePath); err != nil {
+		return err
+	}
+	m.clearFsFor(snapshot.CidV2, []string{filePath})
+	m.writeLastManifest(snapshot.CidV2, snapshot.Root, snapshot.Height, filePath)
+	return nil
+}
+
+// DiscardSnapshot removes a downloaded snapshot file that is not kept.
+func (m *SnapshotManager) DiscardSnapshot(downloadedFile string) {
+	if err := os.Remove(downloadedFile); err != nil && !os.IsNotExist(err) {
+		m.log.Error("Cannot remove downloaded snapshot", "err", err)
+	}
+}
+
+// limitedWriter writes up to left bytes, then fails with ErrSnapshotTooLarge.
+type limitedWriter struct {
+	w    io.Writer
+	left int64
+}
+
+func (l *limitedWriter) Write(p []byte) (int, error) {
+	if int64(len(p)) > l.left {
+		return 0, ErrSnapshotTooLarge
+	}
+	n, err := l.w.Write(p)
+	l.left -= int64(n)
+	return n, err
 }
 
 func (m *SnapshotManager) StartSync() {
