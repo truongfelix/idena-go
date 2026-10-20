@@ -186,7 +186,7 @@ func (st *fastSyncTest) blocks() []*block {
 func (st *fastSyncTest) batchOf(blocks []*block) *batch {
 	from, to := blocks[0].Header.Height(), blocks[len(blocks)-1].Header.Height()
 	st.fs.manifest = &snapshot.Manifest{Height: to}
-	b := &batch{from: from, to: to, p: &protoPeer{id: testServingPeer, log: log.New()}, headers: make(chan *block, len(blocks))}
+	b := &batch{from: from, to: to, p: newHeightTestPeer(testServingPeer, 0), headers: make(chan *block, len(blocks))}
 	for _, block := range blocks {
 		b.headers <- block
 	}

@@ -76,12 +76,19 @@ func (s *syncHeight) Read() uint64 {
 // the height the peer announced again. A var so tests can shorten it.
 var heightCapTTL = 10 * time.Minute
 
+// hintBackoff is how long, after a peer first did not serve blocks in time, its hint (hintHeight) waits before the
+// sync counts it again; it doubles with each further miss, up to heightCapTTL. A var so tests can shorten it.
+var hintBackoff = 20 * time.Second
+
 // heightCap is the height the sync counts for a peer after it did not serve blocks up to the height it announced.
 type heightCap struct {
 	lock   sync.Mutex
 	height uint64
 	// until is when the cap lapses; zero when the peer has no cap.
 	until time.Time
+	// misses counts the times in a row the peer did not serve blocks in time; nextHint is when its hint counts again.
+	misses   int
+	nextHint time.Time
 }
 
 type protoPeer struct {
@@ -91,6 +98,7 @@ type protoPeer struct {
 	rw                   msgio.ReadWriteCloser
 	maxDelayMs           int
 	knownHeight          *syncHeight
+	hintHeight           *syncHeight
 	potentialHeight      *syncHeight
 	heightCap            heightCap
 	manifestLock         sync.Mutex
@@ -152,6 +160,7 @@ func newPeer(stream network.Stream, maxDelayMs int, metrics *metricCollector) *p
 		metrics:              metrics,
 		transportErr:         make(chan error, 1),
 		knownHeight:          &syncHeight{},
+		hintHeight:           &syncHeight{},
 		potentialHeight:      &syncHeight{},
 		version:              vers,
 		supportedFeatures:    map[PeerFeature]struct{}{},
@@ -549,18 +558,32 @@ func msgKey(data []byte) string {
 	return string(hash[:])
 }
 
+// setHeight takes a height the peer is known to be on: a block it served whose header checked out, or a proposal for
+// the current round that checked out.
 func (p *protoPeer) setHeight(newHeight uint64) {
 	p.heightCap.lock.Lock()
 	if newHeight > p.knownHeight.Read() {
 		p.knownHeight.Store(newHeight)
-		// A height above the announced one (a block served, a proposal): the sync counts it, until the peer does
-		// not serve it.
+		// A height above the announced one: the sync counts it, until the peer does not serve it.
 		p.heightCap.until = time.Time{}
 	} else if newHeight > p.heightCap.height {
 		// A block served above the cap.
 		p.heightCap.height = newHeight
 	}
+	if newHeight >= p.hintHeight.Read() {
+		// The peer served up to its hint.
+		p.heightCap.misses = 0
+		p.heightCap.nextHint = time.Time{}
+	}
 	p.heightCap.lock.Unlock()
+	p.setPotentialHeight(newHeight)
+}
+
+// setHintHeight takes the height a proposal this node cannot check yet puts the peer on (a proposal for a coming
+// round: round-1). The sync asks the peer for the blocks up to it (syncTargetHeight), and only the blocks it then
+// serves raise its height (setHeight).
+func (p *protoPeer) setHintHeight(newHeight uint64) {
+	p.hintHeight.Store(newHeight)
 	p.setPotentialHeight(newHeight)
 }
 
@@ -568,21 +591,56 @@ func (p *protoPeer) setHeight(newHeight uint64) {
 // next one in time, so that the sync target does not stay above the blocks peers serve. The announced height stays
 // (knownHeight): the full sync wants a certificate on the block at it. The cap lapses after heightCapTTL, and a
 // block served above it or a higher announced height lifts it: a peer that missed blocks during a link drop counts
-// again.
+// again. The peer's hint counts again after hintBackoff, twice as long after each further miss.
 func (p *protoPeer) capHeight(height uint64) {
 	p.heightCap.lock.Lock()
 	defer p.heightCap.lock.Unlock()
+	now := time.Now()
 	p.heightCap.height = height
-	p.heightCap.until = time.Now().Add(heightCapTTL)
+	p.heightCap.until = now.Add(heightCapTTL)
+	backoff := heightCapTTL
+	if p.heightCap.misses < 16 && hintBackoff<<p.heightCap.misses < heightCapTTL {
+		backoff = hintBackoff << p.heightCap.misses
+	}
+	p.heightCap.misses++
+	p.heightCap.nextHint = now.Add(backoff)
 }
 
-// syncTargetHeight is the height the sync counts for the peer: the announced one, or a lower cap while it lasts.
+// syncTargetHeight is the height the sync counts for the peer: the announced one, or a lower cap while it lasts; or
+// the peer's hint above them, unless the peer missed blocks and its backoff runs.
 func (p *protoPeer) syncTargetHeight() uint64 {
 	p.heightCap.lock.Lock()
 	defer p.heightCap.lock.Unlock()
-	known := p.knownHeight.Read()
-	if !p.heightCap.until.IsZero() && time.Now().Before(p.heightCap.until) && p.heightCap.height < known {
-		return p.heightCap.height
+	now := time.Now()
+	target := p.knownHeight.Read()
+	if !p.heightCap.until.IsZero() && now.Before(p.heightCap.until) && p.heightCap.height < target {
+		target = p.heightCap.height
+	}
+	if hint := p.hintHeight.Read(); hint > target && !now.Before(p.heightCap.nextHint) {
+		target = hint
+	}
+	return target
+}
+
+// setProposalHeight takes the height a proposal for round puts the peer on, round-1: as a known height when the
+// proposal checked out, else as a hint. A round 0 says nothing.
+func (p *protoPeer) setProposalHeight(round uint64, checked bool) {
+	if round == 0 {
+		return
+	}
+	if checked {
+		p.setHeight(round - 1)
+	} else {
+		p.setHintHeight(round - 1)
+	}
+}
+
+// announcedHeight is the highest height the peer said it is on, by its handshake, the blocks it served or its
+// proposals: the full sync wants a certificate on the block at it.
+func (p *protoPeer) announcedHeight() uint64 {
+	known, hint := p.knownHeight.Read(), p.hintHeight.Read()
+	if hint > known {
+		return hint
 	}
 	return known
 }
