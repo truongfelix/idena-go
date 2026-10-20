@@ -672,6 +672,18 @@ func TestValidateProposerProofReturnsVrfErrorForMalformedProof(t *testing.T) {
 	require.ErrorIs(t, err, p256.ErrInvalidVRF)
 }
 
+// A key that is not an identity cannot propose: its proof is refused as such, whatever it holds.
+func TestValidateProposerProofRefusesNonIdentityFirst(t *testing.T) {
+	chain, _, _, _ := NewTestBlockchain(true, nil)
+	defer chain.SecStore().Destroy()
+
+	key, err := crypto.GenerateKey()
+	require.NoError(t, err)
+	err = chain.ValidateProposerProof([]byte{0x1, 0x2, 0x3}, crypto.FromECDSAPub(&key.PublicKey))
+
+	require.EqualError(t, err, "Proposer is not identity")
+}
+
 type txWithTimestamp struct {
 	tx        *types.Transaction
 	timestamp int64

@@ -2540,6 +2540,12 @@ func (chain *Blockchain) ValidateProposerProof(proof []byte, pubKeyData []byte) 
 	if err != nil {
 		return err
 	}
+	// Only an identity can propose: check it before evaluating the proof, which is the costly part.
+	proposerAddr := crypto.PubkeyToAddress(*pubKey)
+	if !checkIfProposer(proposerAddr, chain.appState) {
+		return errors.New("Proposer is not identity")
+	}
+
 	verifier, err := p256.NewVRFVerifier(pubKey)
 	if err != nil {
 		return err
@@ -2551,7 +2557,6 @@ func (chain *Blockchain) ValidateProposerProof(proof []byte, pubKeyData []byte) 
 	}
 
 	vrfThreshold := new(big.Float).SetFloat64(chain.appState.State.VrfProposerThreshold())
-	proposerAddr := crypto.PubkeyToAddress(*pubKey)
 	modifier := 1
 	if chain.appState.ValidatorsCache.IsPool(proposerAddr) {
 		modifier = chain.appState.ValidatorsCache.PoolSize(proposerAddr)
@@ -2561,10 +2566,6 @@ func (chain *Blockchain) ValidateProposerProof(proof []byte, pubKeyData []byte) 
 
 	if q.Cmp(vrfThreshold) == -1 {
 		return errors.New("Proposer is invalid")
-	}
-
-	if !checkIfProposer(proposerAddr, chain.appState) {
-		return errors.New("Proposer is not identity")
 	}
 	return nil
 }
