@@ -55,6 +55,21 @@ jobs:
           echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $archive" | sha256sum --check --status
           tar -xzf "$archive" -C "$RUNNER_TEMP" gitleaks
 
+          # Control: the config must report a fresh token, even in a file whose name an allowlist could skip.
+          control_dir="$RUNNER_TEMP/gitleaks-control"
+          mkdir -p "$control_dir/config"
+          printf 'token = "ghp_%s"\n' "$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 36)" >"$control_dir/config/flags.go"
+          control_report="$RUNNER_TEMP/gitleaks-control.json"
+          set +e
+          "$RUNNER_TEMP/gitleaks" dir "$control_dir" --config .gitleaks.toml --no-banner --redact=100 \
+            --report-format json --report-path "$control_report" --log-level error
+          control_status=$?
+          set -e
+          if [ "$control_status" -ne 1 ] || [ "$(jq length "$control_report")" -ne 1 ]; then
+            echo "gitleaks with .gitleaks.toml did not report a planted token: the scan would check nothing" >&2
+            exit 1
+          fi
+
           tree_report="$RUNNER_TEMP/gitleaks-tree.json"
           history_report="$RUNNER_TEMP/gitleaks-history.json"
           set +e
