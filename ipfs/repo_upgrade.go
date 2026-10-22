@@ -80,6 +80,9 @@ func convertLegacyConfig(repoDir string, version int) error {
 	if err := moveAcceleratedDHTClient(conf); err != nil {
 		return err
 	}
+	if err := dropRemovedKeys(conf); err != nil {
+		return err
+	}
 	converted, err := json.MarshalIndent(conf, "", "  ")
 	if err != nil {
 		return err
@@ -118,6 +121,37 @@ func moveAcceleratedDHTClient(conf map[string]any) error {
 		routingMap["AcceleratedDHTClient"] = enabled
 	}
 	conf["Routing"] = routingMap
+	return nil
+}
+
+// dropRemovedKeys drops two keys kubo 0.42 refuses unless they are off or empty: Experimental.GraphsyncEnabled
+// (removed in kubo 0.25) and Swarm.ResourceMgr.Limits (removed in 0.19). The official node writes false and {},
+// which kubo accepts; a hand-edited config may hold others. Kubo reads a missing key as off or empty.
+func dropRemovedKeys(conf map[string]any) error {
+	if experimental, ok := conf["Experimental"]; ok && experimental != nil {
+		experimentalMap, ok := experimental.(map[string]any)
+		if !ok {
+			return fmt.Errorf("invalid type for .Experimental: %T", experimental)
+		}
+		delete(experimentalMap, "GraphsyncEnabled")
+	}
+	swarm, ok := conf["Swarm"]
+	if !ok || swarm == nil {
+		return nil
+	}
+	swarmMap, ok := swarm.(map[string]any)
+	if !ok {
+		return fmt.Errorf("invalid type for .Swarm: %T", swarm)
+	}
+	resourceMgr, ok := swarmMap["ResourceMgr"]
+	if !ok || resourceMgr == nil {
+		return nil
+	}
+	resourceMgrMap, ok := resourceMgr.(map[string]any)
+	if !ok {
+		return fmt.Errorf("invalid type for .Swarm.ResourceMgr: %T", resourceMgr)
+	}
+	delete(resourceMgrMap, "Limits")
 	return nil
 }
 

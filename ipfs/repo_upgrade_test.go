@@ -83,6 +83,76 @@ func TestConfigureIpfsRefusesRepoOlderThanOfficial(t *testing.T) {
 	require.NoFileExists(t, filepath.Join(dataDir, "config.v11.bak"))
 }
 
+func TestConfigureIpfsDropsKeysKuboRefuses(t *testing.T) {
+	dataDir := t.TempDir()
+	newOfficialRepo(t, dataDir)
+	// A hand-edited official config: values kubo 0.42 refuses.
+	configFile := filepath.Join(dataDir, "config")
+	raw, err := os.ReadFile(configFile)
+	require.NoError(t, err)
+	var conf map[string]any
+	require.NoError(t, json.Unmarshal(raw, &conf))
+	conf["Experimental"].(map[string]any)["GraphsyncEnabled"] = true
+	conf["Swarm"].(map[string]any)["ResourceMgr"] = map[string]any{
+		"Limits": map[string]any{"System": map[string]any{"Conns": 128}},
+	}
+	edited, err := json.MarshalIndent(conf, "", "  ")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(configFile, edited, 0600))
+
+	configured, err := configureIpfs(testIpfsConfig(dataDir), eventbus.New())
+	require.NoError(t, err)
+	require.NotNil(t, configured)
+
+	stored, err := os.ReadFile(configFile)
+	require.NoError(t, err)
+	var storedConf map[string]any
+	require.NoError(t, json.Unmarshal(stored, &storedConf))
+	require.NotContains(t, storedConf["Experimental"], "GraphsyncEnabled")
+	require.NotContains(t, storedConf["Swarm"].(map[string]any)["ResourceMgr"], "Limits")
+	backup, err := os.ReadFile(filepath.Join(dataDir, "config.v12.bak"))
+	require.NoError(t, err)
+	require.Equal(t, edited, backup)
+}
+
+func TestDropRemovedKeys(t *testing.T) {
+	cases := []struct {
+		name    string
+		conf    string
+		want    string
+		wantErr string
+	}{
+		{name: "neither", conf: `{"Experimental":{"FilestoreEnabled":true},"Swarm":{"ResourceMgr":{"Enabled":true}}}`,
+			want: `{"Experimental":{"FilestoreEnabled":true},"Swarm":{"ResourceMgr":{"Enabled":true}}}`},
+		{name: "official values", conf: `{"Experimental":{"GraphsyncEnabled":false},"Swarm":{"ResourceMgr":{"Limits":{}}}}`,
+			want: `{"Experimental":{},"Swarm":{"ResourceMgr":{}}}`},
+		{name: "values kubo refuses", conf: `{"Experimental":{"GraphsyncEnabled":true},"Swarm":{"ResourceMgr":{"Enabled":true,"Limits":{"System":{"Conns":128}}}}}`,
+			want: `{"Experimental":{},"Swarm":{"ResourceMgr":{"Enabled":true}}}`},
+		{name: "no Experimental, no Swarm", conf: `{"Routing":{"Type":"dht"}}`, want: `{"Routing":{"Type":"dht"}}`},
+		{name: "nulls", conf: `{"Experimental":null,"Swarm":{"ResourceMgr":null}}`,
+			want: `{"Experimental":null,"Swarm":{"ResourceMgr":null}}`},
+		{name: "Experimental not a map", conf: `{"Experimental":[]}`, wantErr: "invalid type for .Experimental"},
+		{name: "Swarm not a map", conf: `{"Swarm":"on"}`, wantErr: "invalid type for .Swarm"},
+		{name: "ResourceMgr not a map", conf: `{"Swarm":{"ResourceMgr":true}}`,
+			wantErr: "invalid type for .Swarm.ResourceMgr"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var conf map[string]any
+			require.NoError(t, json.Unmarshal([]byte(c.conf), &conf))
+			err := dropRemovedKeys(conf)
+			if c.wantErr != "" {
+				require.ErrorContains(t, err, c.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			got, err := json.Marshal(conf)
+			require.NoError(t, err)
+			require.JSONEq(t, c.want, string(got))
+		})
+	}
+}
+
 func TestMoveAcceleratedDHTClient(t *testing.T) {
 	cases := []struct {
 		name    string
