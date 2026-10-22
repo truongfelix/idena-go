@@ -27,3 +27,71 @@ jobs:
         run: go mod verify
       - name: Run chain compatibility fixtures
         run: go test ./compatibility ./resources ./common ./crypto ./protocol ./vm/wasm
+
+  # Evidence for the secret-scan gate: the locked runtime commit's tree and its history, with a pinned gitleaks and
+  # this commit's .gitleaks.toml (the config is not runtime code; it may change after the locked commit).
+  secret-scan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+      - name: Scan the locked runtime tree and its history
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtime_commit="$(jq -r '.components[] | select(.name == "idena-go") | .runtimeCodeCommit' compatibility/stack-lock.json)"
+          [[ "$runtime_commit" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git cat-file -t "$runtime_commit")" = commit
+          scan_dir="$RUNNER_TEMP/idena-go-runtime-tree"
+          mkdir -p "$scan_dir"
+          git archive "$runtime_commit" | tar -x -C "$scan_dir"
+
+          archive="$RUNNER_TEMP/gitleaks_8.30.1_linux_x64.tar.gz"
+          curl --fail --location --silent --show-error \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
+            --output "$archive"
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $archive" | sha256sum --check --status
+          tar -xzf "$archive" -C "$RUNNER_TEMP" gitleaks
+
+          # Control: the config must report a fresh token, even in a file whose name an allowlist could skip.
+          control_dir="$RUNNER_TEMP/gitleaks-control"
+          mkdir -p "$control_dir/config"
+          printf 'token = "ghp_%s"\n' "$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 36)" >"$control_dir/config/flags.go"
+          control_report="$RUNNER_TEMP/gitleaks-control.json"
+          set +e
+          "$RUNNER_TEMP/gitleaks" dir "$control_dir" --config .gitleaks.toml --no-banner --redact=100 \
+            --report-format json --report-path "$control_report" --log-level error
+          control_status=$?
+          set -e
+          if [ "$control_status" -ne 1 ] || [ "$(jq length "$control_report")" -ne 1 ]; then
+            echo "gitleaks with .gitleaks.toml did not report a planted token: the scan would check nothing" >&2
+            exit 1
+          fi
+
+          tree_report="$RUNNER_TEMP/gitleaks-tree.json"
+          history_report="$RUNNER_TEMP/gitleaks-history.json"
+          set +e
+          "$RUNNER_TEMP/gitleaks" dir "$scan_dir" \
+            --config .gitleaks.toml --no-banner --redact=100 \
+            --report-format json --report-path "$tree_report" --log-level error
+          tree_status=$?
+          "$RUNNER_TEMP/gitleaks" git . --log-opts="$runtime_commit" \
+            --config .gitleaks.toml --no-banner --redact=100 \
+            --report-format json --report-path "$history_report" --log-level error
+          history_status=$?
+          set -e
+          echo "testedCommit=$runtime_commit"
+          echo "checkedCommit=$GITHUB_SHA"
+          echo "gitleaks=8.30.1 archiveSha256=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+          echo "gitTree=$(git rev-parse "$runtime_commit^{tree}")"
+          echo "trackedPaths=$(git ls-tree -r --name-only "$runtime_commit" | wc -l | tr -d ' ')"
+          echo "historyCommits=$(git rev-list --count "$runtime_commit")"
+          echo "configSha256=$(sha256sum .gitleaks.toml | cut -d ' ' -f 1)"
+          echo "treeFindingCount=$(jq length "$tree_report")"
+          echo "historyFindingCount=$(jq length "$history_report")"
+          test "$tree_status" -eq 0
+          test "$history_status" -eq 0
+          test "$(jq length "$tree_report")" -eq 0
+          test "$(jq length "$history_report")" -eq 0
