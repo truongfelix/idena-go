@@ -1,23 +1,33 @@
 title = "idena-go gitleaks config"
 
+# Without this, the file defines no rule and every scan finds nothing.
+[extend]
+useDefault = true
+
+# Each allowlist names the constant and matches the whole finding ("match"; the default target, the secret alone,
+# never holds the name). No `paths`: a path in an allowlist skips the whole file, whatever the condition.
+
 [[allowlists]]
 description = "Public Idena IPFS swarm key constants"
-condition = "AND"
-paths = [
-  '''config/flags\.go''',
-  '''ipfs/ipfs_test\.go''',
-]
+regexTarget = "match"
 regexes = [
-  '''DefaultSwarmKey\s*=\s*"[0-9a-f]{64}"''',
-  '''SwarmKey:\s*"[0-9a-f]{64}"''',
+  '''(?i)swarmKey\s*[:=]\s*"[0-9a-f]{64}"''',
 ]
 
 [[allowlists]]
-description = "Deterministic VRF test vector private key"
-condition = "AND"
-paths = [
-  '''crypto/vrf/p256/p256_test\.go''',
-]
+description = "Deterministic VRF test vector private keys (crypto/vrf/p256/p256_test.go)"
+regexTarget = "match"
 regexes = [
   '''privKey\s*=\s*`[0-9a-f]{64}`''',
 ]
+
+[[allowlists]]
+description = "Fixed test key of the blocks-with-address API test"
+regexTarget = "match"
+regexes = [
+  '''blocksWithAddressTestKey\s*=\s*"[0-9a-f]{64}"''',
+]
+
+[[allowlists]]
+description = "The VRF test vector PEM key of 2018, in history only"
+commits = ["23fe07dda2dac0d10e4d7f7d27ba2a19295606aa"]
