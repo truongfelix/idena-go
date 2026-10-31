@@ -45,6 +45,8 @@ const (
 )
 
 type ceremonyData struct {
+	// own: the node's own addresses, whose flip details are recorded (Store.ownSet when the block started).
+	own                map[common.Address]bool
 	identities         map[common.Address]*identityData
 	validation         *statsTypes.ValidationStats
 	results            map[common.ShardId]*types.ValidationResults
@@ -58,6 +60,8 @@ type ceremonyData struct {
 type identityData struct {
 	prevState state.IdentityState
 	madeFlips int
+	// madeCids: the CIDs of its flips in the ending epoch, kept for an own address only.
+	madeCids [][]byte
 }
 
 type identityRewards struct {
@@ -87,6 +91,7 @@ func NewRecorder(inner collector.StatsCollector, store *Store, appState *appstat
 func (r *Recorder) data() *ceremonyData {
 	if r.current == nil {
 		r.current = &ceremonyData{
+			own:                r.store.ownSet(),
 			identities:         make(map[common.Address]*identityData),
 			penalizedStakes:    make(map[common.Address]*big.Int),
 			nonValidatedStakes: make(map[common.Address]*big.Int),
@@ -117,10 +122,17 @@ func (r *Recorder) BeginFailedValidationBalanceUpdate(addr common.Address, appSt
 	identity := appState.State.GetIdentity(addr)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.data().identities[addr] = &identityData{
+	d := r.data()
+	data := &identityData{
 		prevState: identity.State,
 		madeFlips: len(identity.Flips),
 	}
+	if d.own[addr] {
+		for _, flip := range identity.Flips {
+			data.madeCids = append(data.madeCids, append([]byte{}, flip.Cid...))
+		}
+	}
+	d.identities[addr] = data
 }
 
 func (r *Recorder) SetValidation(validation *statsTypes.ValidationStats) {
@@ -249,6 +261,17 @@ func (r *Recorder) onBlockAdded(block *types.Block) {
 	epoch--
 	// The state after the block, as dna_identity shows it (a killed identity is cleared: Undefined).
 	summaries := d.summaries(epoch, r.appState.State.GetIdentityState)
+	for _, s := range summaries {
+		if !d.own[s.Address] {
+			continue
+		}
+		details, err := d.flipDetails(s.Address, d.identities[s.Address].madeCids)
+		if err != nil {
+			r.log.Error("Cannot record flip details", "epoch", epoch, "address", s.Address.Hex(), "err", err)
+			continue
+		}
+		s.FlipDetails = details
+	}
 	if err := r.store.WriteCeremony(epoch, d.validation.Failed, d.flips(), summaries); err != nil {
 		r.log.Error("Cannot record validation summaries", "epoch", epoch, "err", err)
 		return

@@ -67,6 +67,18 @@ func ownKey(address common.Address, epoch uint16) []byte {
 
 // copyOwn writes the own addresses' summaries of the epoch (written: the epoch's new summaries by address; nil:
 // read them from the store), the identities with no summary included, as Get shows them.
+// ownSet: the node's own addresses now (none before SetOwn).
+func (s *Store) ownSet() map[common.Address]bool {
+	set := make(map[common.Address]bool)
+	if s.own == nil {
+		return set
+	}
+	for _, addr := range s.own() {
+		set[addr] = true
+	}
+	return set
+}
+
 func (s *Store) copyOwn(batch dbm.Batch, epoch uint16, written map[common.Address]*Summary) error {
 	if s.own == nil {
 		return nil

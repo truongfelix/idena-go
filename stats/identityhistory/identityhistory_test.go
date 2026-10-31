@@ -404,7 +404,7 @@ func TestTransactionsAndScores(t *testing.T) {
 	}
 	send(47, types.SendTx, nonce)
 	require.NoError(t, f.summaries.Write(47, false, []*validationsummary.Summary{{Epoch: 47, Address: me,
-		Participated: true}}))
+		Participated: true, FlipDetails: &validationsummary.FlipDetails{Solved: []validationsummary.SolvedFlip{{Cid: "x"}}}}}))
 	require.NoError(t, f.summaries.Write(46, false, []*validationsummary.Summary{{Epoch: 46, Address: me,
 		Participated: true, Missed: true}}))
 	for _, score := range []byte{0x13, 0x24, 0x35} {
@@ -424,6 +424,13 @@ func TestTransactionsAndScores(t *testing.T) {
 	require.Equal(t, &Transactions{Sent: 3, Flips: 1, ShortAnswers: true, LongAnswers: true}, byEpoch[45].Transactions)
 	require.Equal(t, &Transactions{Sent: 1}, byEpoch[47].Transactions)
 	require.True(t, byEpoch[46].Summary.Missed)
+	// The flip details stay in dna_validationSummary; the history says they are there.
+	require.Nil(t, byEpoch[47].Summary.FlipDetails)
+	require.True(t, byEpoch[47].HasFlipDetails)
+	require.False(t, byEpoch[46].HasFlipDetails)
+	kept, err := f.summaries.Get(47, me)
+	require.NoError(t, err)
+	require.NotNil(t, kept.FlipDetails)
 
 	// 47 from its summary; 46 missed; before the summaries, 45 and 44 had both answers: two epochs for the two
 	// scores left.

@@ -37,8 +37,11 @@ type Epoch struct {
 	// changes wrote it (a ceremony block writes every address it processed, unchanged ones included); null when the
 	// block wrote nothing for the address, or the node does not know the block.
 	Validated *bool `json:"validated"`
-	// Summary: dna_validationSummary of the epoch, null when the node did not record it.
+	// Summary: dna_validationSummary of the epoch without its flipDetails (dna_validationSummary gives them: they are
+	// the long part, every answer to the own flips), null when the node did not record it.
 	Summary *validationsummary.Summary `json:"summary"`
+	// HasFlipDetails: dna_validationSummary of the epoch holds the flip details.
+	HasFlipDetails bool `json:"hasFlipDetails"`
 	// Mining: the own address's block rewards in the epoch, null when none were recorded.
 	Mining *MiningSummary `json:"mining"`
 	// Transactions: what the own address sent in the epoch, null when the node has no transaction of it then.
@@ -128,6 +131,11 @@ func (s *Service) History(address common.Address) (*History, error) {
 		if uint16(epoch) < current {
 			if e.Summary, err = s.summaries.Get(uint16(epoch), address); err != nil {
 				return nil, err
+			}
+			if e.Summary != nil && e.Summary.FlipDetails != nil {
+				short := *e.Summary
+				short.FlipDetails = nil
+				e.Summary, e.HasFlipDetails = &short, true
 			}
 			summaries[uint16(epoch)] = e.Summary
 		}
