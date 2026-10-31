@@ -37,6 +37,8 @@ type Summary struct {
 	Rewards           Rewards        `json:"rewards"`
 	// The part of the rewards paid to the identity's pool (delegatee) instead of the identity.
 	DelegateeReward *DelegateeReward `json:"delegateeReward,omitempty"`
+	// FlipDetails: each flip the identity solved or made (FlipDetails); the node's own addresses only.
+	FlipDetails *FlipDetails `json:"flipDetails,omitempty"`
 }
 
 // Ceremony: what the validation ceremony of the epoch did as a whole.
