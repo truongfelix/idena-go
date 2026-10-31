@@ -197,4 +197,8 @@ var (
 		Name:  "autoonline",
 		Usage: "Node will automatically turn on online mining status",
 	}
+	PprofPortFlag = cli.IntFlag{
+		Name:  "pprofport",
+		Usage: "Serve the Go runtime profiles (net/http/pprof) on 127.0.0.1 at this port; 0: off",
+	}
 )
