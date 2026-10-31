@@ -12,10 +12,12 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/dgraph-io/badger"
 	"github.com/idena-network/idena-go/common/eventbus"
 	"github.com/ipfs/boxo/datastore/dshelp"
 	ds "github.com/ipfs/go-datastore"
 	"github.com/ipfs/go-datastore/query"
+	badgerds "github.com/ipfs/go-ds-badger"
 	ipfsConf "github.com/ipfs/kubo/config"
 	"github.com/ipfs/kubo/repo/fsrepo"
 	"github.com/multiformats/go-multihash"
@@ -335,5 +337,56 @@ func TestConfigureIpfsConvertsBadgerRepo(t *testing.T) {
 	require.True(t, specHasType(configured.Datastore.Spec, "flatfs"))
 	require.False(t, specHasType(configured.Datastore.Spec, "badgerds"))
 	require.Equal(t, before["Identity"].(map[string]any)["PeerID"], configured.Identity.PeerID)
+	requireConverted(t, dataDir, want)
+}
+
+// copyTree copies a folder's files as they are on disk now (a store still open: a node stopped without closing it).
+func copyTree(t *testing.T, from, to string) {
+	require.NoError(t, os.MkdirAll(to, 0700))
+	entries, err := os.ReadDir(from)
+	require.NoError(t, err)
+	for _, entry := range entries {
+		data, err := os.ReadFile(filepath.Join(from, entry.Name()))
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(filepath.Join(to, entry.Name()), data, 0600))
+	}
+}
+
+// The store is read without changing it: read-only, so no compaction rewrites its tables (on the node's PC a
+// compaction builds its new tables in memory, gigabytes on a store of a few).
+func TestConvertBadgerRepoReadsBadgerWithoutChangingIt(t *testing.T) {
+	dataDir, want := badgerRepo(t, 2500, 1500)
+	before, err := badgerFingerprint(filepath.Join(dataDir, badgerDirName))
+	require.NoError(t, err)
+	require.NoError(t, convertBadgerRepo(dataDir))
+	requireConverted(t, dataDir, want)
+	after, err := badgerFingerprint(filepath.Join(dataDir, badgerOldDirName))
+	require.NoError(t, err)
+	require.Equal(t, before, after)
+}
+
+// A store its node did not close (killed, power cut) holds writes Badger must replay, which a read-only open refuses:
+// it is opened writable, and every key, the replayed ones too, is copied.
+func TestConvertBadgerRepoConvertsAStoreNotClosed(t *testing.T) {
+	dataDir, want := badgerRepo(t, 50, 20)
+	repo, err := fsrepo.Open(dataDir)
+	require.NoError(t, err)
+	ctx := context.Background()
+	for i := 0; i < 30; i++ {
+		key := ds.NewKey(fmt.Sprintf("/providers/CIQC%d/CIQD", i))
+		value := []byte(fmt.Sprintf("written before the stop %d", i))
+		require.NoError(t, repo.Datastore().Put(ctx, key, value))
+		want[key.String()] = value
+	}
+	unclosed := filepath.Join(t.TempDir(), "badgerds")
+	copyTree(t, filepath.Join(dataDir, badgerDirName), unclosed)
+	require.NoError(t, repo.Close())
+	require.NoError(t, os.RemoveAll(filepath.Join(dataDir, badgerDirName)))
+	require.NoError(t, os.Rename(unclosed, filepath.Join(dataDir, badgerDirName)))
+
+	_, err = badgerds.NewDatastore(filepath.Join(dataDir, badgerDirName), badgerReadOptions(true))
+	require.ErrorContains(t, err, badger.ErrReplayNeeded.Error())
+
+	require.NoError(t, convertBadgerRepo(dataDir))
 	requireConverted(t, dataDir, want)
 }

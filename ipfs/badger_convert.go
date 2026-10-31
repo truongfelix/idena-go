@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dgraph-io/badger"
 	"github.com/dgraph-io/badger/options"
 	"github.com/idena-network/idena-go/log"
 	ds "github.com/ipfs/go-datastore"
@@ -251,13 +252,33 @@ func badgerFingerprint(dir string) (string, error) {
 	return b.String(), err
 }
 
+// openBadgerToRead opens the store without the memory its node use costs: tables read from disk instead of mapped,
+// no value log GC and no compaction (a compaction builds its new tables in memory: gigabytes on a store of a few).
+// Read-only first; a store the official node did not close cleanly needs its value log replayed, which only a
+// writable open does, so that one opens writable with every compaction trigger out of reach.
 func openBadgerToRead(dir string) (*badgerds.Datastore, error) {
+	store, err := badgerds.NewDatastore(dir, badgerReadOptions(true))
+	// Badger wraps it into a new error (errFile) that keeps only its text.
+	if err == nil || !strings.Contains(err.Error(), badger.ErrReplayNeeded.Error()) {
+		return store, err
+	}
+	log.Info("The IPFS Badger store was not closed cleanly; it is opened writable, without compaction")
+	return badgerds.NewDatastore(dir, badgerReadOptions(false))
+}
+
+func badgerReadOptions(readOnly bool) *badgerds.Options {
 	opts := badgerds.DefaultOptions
-	// Read the tables from disk instead of mapping them, and no value log GC: the store is only read, then deleted.
 	opts.Options.TableLoadingMode = options.FileIO
 	opts.Options.ValueLogLoadingMode = options.FileIO
 	opts.GcInterval = 0
-	return badgerds.NewDatastore(dir, &opts)
+	opts.Options.ReadOnly = readOnly
+	opts.Options.CompactL0OnClose = false
+	// Badger compacts a level when its size or table count reaches these (scores below 1 never run). Zero
+	// compactors would be simpler, but Badger v1 then panics on close.
+	opts.Options.NumLevelZeroTables = 1 << 20
+	opts.Options.NumLevelZeroTablesStall = 1<<20 + 1
+	opts.Options.LevelOneSize = 1 << 40
+	return &opts
 }
 
 func openCopy(repoDir string) (ds.Batching, error) {
