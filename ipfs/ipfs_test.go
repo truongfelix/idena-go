@@ -134,24 +134,6 @@ func TestConfigureIpfsDisablesProvidingWhenReproviderIntervalIsZero(t *testing.T
 	require.NoError(t, ipfsConf.ValidateProvideConfig(&configured.Provide))
 }
 
-func TestConfigureIpfsPreservesExistingBadgerRepo(t *testing.T) {
-	dataDir := t.TempDir()
-	legacyConfig, err := ipfsConf.Init(io.Discard, 2048)
-	require.NoError(t, err)
-	require.NoError(t, ipfsConf.Profiles["badgerds"].Transform(legacyConfig))
-	require.NoError(t, fsrepo.Init(dataDir, legacyConfig))
-
-	configured, err := configureIpfs(testIpfsConfig(dataDir), eventbus.New())
-	require.NoError(t, err)
-	require.Equal(t, "badgerds", configured.Datastore.Spec["type"])
-	require.Equal(t, ipfsConf.False, configured.AutoConf.Enabled)
-	require.Equal(t, ipfsConf.False, configured.AutoTLS.Enabled)
-
-	locked, err := fsrepo.LockedByOtherProcess(dataDir)
-	require.NoError(t, err)
-	require.False(t, locked)
-}
-
 func TestConfigureIpfsPreservesMalformedExistingConfig(t *testing.T) {
 	dataDir := t.TempDir()
 	initialConfig, err := ipfsConf.Init(io.Discard, 2048)

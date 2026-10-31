@@ -1,0 +1,339 @@
+//go:build !idena_memory_ipfs
+
+package ipfs
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/idena-network/idena-go/common/eventbus"
+	"github.com/ipfs/boxo/datastore/dshelp"
+	ds "github.com/ipfs/go-datastore"
+	"github.com/ipfs/go-datastore/query"
+	ipfsConf "github.com/ipfs/kubo/config"
+	"github.com/ipfs/kubo/repo/fsrepo"
+	"github.com/multiformats/go-multihash"
+	"github.com/stretchr/testify/require"
+)
+
+// badgerRepo makes an official-style repository (one Badger store) holding blocks, provider records and other keys,
+// written through kubo's own repository; it returns every key with its value.
+func badgerRepo(t *testing.T, blocks, others int) (string, map[string][]byte) {
+	dataDir := t.TempDir()
+	config, err := ipfsConf.Init(io.Discard, 2048)
+	require.NoError(t, err)
+	require.NoError(t, ipfsConf.Profiles["badgerds"].Transform(config))
+	require.NoError(t, fsrepo.Init(dataDir, config))
+	ok, err := isBadgerRepo(dataDir)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	want := make(map[string][]byte)
+	putAll(t, dataDir, want, func(put func(string, []byte)) {
+		for i := 0; i < blocks; i++ {
+			data := []byte(fmt.Sprintf("block %d %s", i, bytes.Repeat([]byte{byte(i)}, i%300)))
+			hash, err := multihash.Sum(data, multihash.SHA2_256, -1)
+			require.NoError(t, err)
+			put("/blocks"+dshelp.MultihashToDsKey(hash).String(), data)
+		}
+		for i := 0; i < others; i++ {
+			put(fmt.Sprintf("/providers/CIQA%d/CIQB", i), []byte(fmt.Sprintf("provider record %d", i)))
+		}
+		put("/local/filesroot", []byte("root"))
+		put("/pins/state", []byte{0x1, 0x2})
+	})
+	return dataDir, want
+}
+
+// putAll writes keys through kubo's repository as it is configured now.
+func putAll(t *testing.T, dataDir string, want map[string][]byte, fill func(put func(string, []byte))) {
+	repo, err := fsrepo.Open(dataDir)
+	require.NoError(t, err)
+	ctx := context.Background()
+	fill(func(key string, value []byte) {
+		require.NoError(t, repo.Datastore().Put(ctx, ds.NewKey(key), value))
+		want[ds.NewKey(key).String()] = value
+	})
+	require.NoError(t, repo.Close())
+}
+
+// readAll opens the repository with kubo and reads every key back.
+func readAll(t *testing.T, dataDir string) map[string][]byte {
+	repo, err := fsrepo.Open(dataDir)
+	require.NoError(t, err)
+	defer repo.Close()
+	results, err := repo.Datastore().Query(context.Background(), query.Query{})
+	require.NoError(t, err)
+	defer results.Close()
+	got := make(map[string][]byte)
+	for result := range results.Next() {
+		require.NoError(t, result.Error)
+		got[result.Key] = result.Value
+	}
+	return got
+}
+
+func requireSameKeys(t *testing.T, dataDir string, want map[string][]byte) {
+	got := readAll(t, dataDir)
+	require.Len(t, got, len(want))
+	for key, value := range want {
+		require.Equal(t, value, got[key], key)
+	}
+}
+
+func exists(t *testing.T, path string) bool {
+	_, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return false
+	}
+	require.NoError(t, err)
+	return true
+}
+
+func requireBadger(t *testing.T, dataDir string, want map[string][]byte) {
+	ok, err := isBadgerRepo(dataDir)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.False(t, exists(t, filepath.Join(dataDir, flatfsDirName)))
+	require.False(t, exists(t, filepath.Join(dataDir, leveldbDirName)))
+	requireSameKeys(t, dataDir, want)
+}
+
+func readState(t *testing.T, dataDir string) *badgerConversionState {
+	return readConversionState(dataDir)
+}
+
+// requireConverted: the repository runs on the copy; the Badger store is kept until the next start.
+func requireConverted(t *testing.T, dataDir string, want map[string][]byte) {
+	ok, err := isBadgerRepo(dataDir)
+	require.NoError(t, err)
+	require.False(t, ok)
+	require.False(t, exists(t, filepath.Join(dataDir, badgerDirName)))
+	requireSameKeys(t, dataDir, want)
+	files, err := filepath.Glob(filepath.Join(dataDir, flatfsDirName, "*", "*.data"))
+	require.NoError(t, err)
+	require.NotEmpty(t, files)
+}
+
+// requireCleaned: a later start deleted the old store, the backups and the marker.
+func requireCleaned(t *testing.T, dataDir string) {
+	for _, gone := range []string{badgerOldDirName, badgerDirName, badgerConversionMarker, "config" + badgerBackup,
+		datastoreSpecFile + badgerBackup} {
+		require.False(t, exists(t, filepath.Join(dataDir, gone)), gone)
+	}
+}
+
+func withFreeSpace(t *testing.T, free func(string) (int64, error)) {
+	old := freeDiskSpace
+	freeDiskSpace = free
+	t.Cleanup(func() { freeDiskSpace = old })
+}
+
+func TestConvertBadgerRepoCopiesEveryKey(t *testing.T) {
+	dataDir, want := badgerRepo(t, 2500, 1500)
+	require.NoError(t, convertBadgerRepo(dataDir))
+	requireConverted(t, dataDir, want)
+	require.True(t, exists(t, filepath.Join(dataDir, badgerOldDirName)))
+	require.Equal(t, stepSwitched, readState(t, dataDir).Step)
+	// The spec is the one a new repository gets.
+	spec, err := os.ReadFile(filepath.Join(dataDir, datastoreSpecFile))
+	require.NoError(t, err)
+	require.JSONEq(t, `{"mounts":[{"mountpoint":"/blocks","path":"blocks","shardFunc":"/repo/flatfs/shard/v1/next-to-last/2","type":"flatfs"},{"mountpoint":"/","path":"datastore","type":"levelds"}],"type":"mount"}`, string(spec))
+
+	// The next start deletes the old store; the one after has nothing to do.
+	require.NoError(t, convertBadgerRepo(dataDir))
+	requireConverted(t, dataDir, want)
+	requireCleaned(t, dataDir)
+	require.NoError(t, convertBadgerRepo(dataDir))
+	requireConverted(t, dataDir, want)
+}
+
+func TestConvertBadgerRepoKeepsBadgerWithoutDiskSpace(t *testing.T) {
+	dataDir, want := badgerRepo(t, 10, 1)
+	withFreeSpace(t, func(string) (int64, error) { return badgerConversionMargin, nil })
+
+	require.NoError(t, convertBadgerRepo(dataDir))
+	requireBadger(t, dataDir, want)
+	require.Nil(t, readState(t, dataDir))
+}
+
+// A start stopped while copying left a partial copy: it is removed before the space is measured, so that it does not
+// count as used (the copy then goes on, or the repository stays on Badger without it).
+func TestConvertBadgerRepoDropsAnInterruptedCopy(t *testing.T) {
+	for _, enoughSpace := range []bool{true, false} {
+		t.Run(fmt.Sprintf("enoughSpace=%v", enoughSpace), func(t *testing.T) {
+			dataDir, want := badgerRepo(t, 50, 1)
+			require.NoError(t, writeConversionState(dataDir, badgerConversionState{Step: stepCopying, Attempts: 1}))
+			partial := filepath.Join(dataDir, flatfsDirName, "XX")
+			require.NoError(t, os.MkdirAll(partial, 0700))
+			require.NoError(t, os.WriteFile(filepath.Join(partial, "LEFTOVER.data"), []byte("x"), 0600))
+			if !enoughSpace {
+				withFreeSpace(t, func(string) (int64, error) { return badgerConversionMargin, nil })
+			}
+
+			require.NoError(t, convertBadgerRepo(dataDir))
+			require.False(t, exists(t, partial))
+			if enoughSpace {
+				requireConverted(t, dataDir, want)
+			} else {
+				requireBadger(t, dataDir, want)
+			}
+		})
+	}
+}
+
+// A copy that fails leaves the repository on Badger, and the node starts; after maxConversionAttempts failures on an
+// unchanged store, no copy is tried any more.
+func TestConvertBadgerRepoFailureKeepsBadger(t *testing.T) {
+	dataDir, want := badgerRepo(t, 2500, 1)
+	// Enough space for the estimate, then the disk "fills" during the copy.
+	calls := 0
+	withFreeSpace(t, func(string) (int64, error) {
+		calls++
+		if calls == 1 {
+			return 1 << 40, nil
+		}
+		return 0, nil
+	})
+	for attempt := 1; attempt <= maxConversionAttempts; attempt++ {
+		calls = 0
+		require.NoError(t, convertBadgerRepo(dataDir))
+		requireBadger(t, dataDir, want)
+		state := readState(t, dataDir)
+		require.Equal(t, stepFailed, state.Step)
+		require.Equal(t, attempt, state.Attempts)
+	}
+
+	// No more attempts, even with the space back.
+	withFreeSpace(t, func(string) (int64, error) { return 1 << 40, nil })
+	require.NoError(t, convertBadgerRepo(dataDir))
+	requireBadger(t, dataDir, want)
+	require.Equal(t, maxConversionAttempts, readState(t, dataDir).Attempts)
+
+	// The node still starts, on Badger.
+	configured, err := configureIpfs(testIpfsConfig(dataDir), eventbus.New())
+	require.NoError(t, err)
+	require.True(t, specHasType(configured.Datastore.Spec, "badgerds"))
+}
+
+// A start stopped after the copy, before or after the switch: the next one checks the copy and finishes.
+func TestConvertBadgerRepoFinishesAfterTheCopy(t *testing.T) {
+	for _, switched := range []bool{false, true} {
+		t.Run(fmt.Sprintf("switched=%v", switched), func(t *testing.T) {
+			dataDir, want := badgerRepo(t, 50, 1)
+			keys, ok := copyBadgerStore(dataDir, 1)
+			require.True(t, ok)
+			require.EqualValues(t, len(want), keys)
+			fingerprint, err := badgerFingerprint(filepath.Join(dataDir, badgerDirName))
+			require.NoError(t, err)
+			require.NoError(t, writeConversionState(dataDir, badgerConversionState{Step: stepCopied, Keys: keys, Attempts: 1, Badger: fingerprint}))
+			if switched {
+				require.NoError(t, switchToFlatfsSpec(dataDir))
+			}
+
+			require.NoError(t, convertBadgerRepo(dataDir))
+			requireConverted(t, dataDir, want)
+			if !switched {
+				require.NoError(t, convertBadgerRepo(dataDir))
+			}
+			requireCleaned(t, dataDir)
+		})
+	}
+}
+
+// A copy made, then Badger written again (an older build run after a crash): the copy is outdated and made again.
+func TestConvertBadgerRepoCopiesAgainAfterBadgerChanged(t *testing.T) {
+	dataDir, want := badgerRepo(t, 50, 1)
+	keys, ok := copyBadgerStore(dataDir, 1)
+	require.True(t, ok)
+	fingerprint, err := badgerFingerprint(filepath.Join(dataDir, badgerDirName))
+	require.NoError(t, err)
+	require.NoError(t, writeConversionState(dataDir, badgerConversionState{Step: stepCopied, Keys: keys, Attempts: 1, Badger: fingerprint}))
+
+	putAll(t, dataDir, want, func(put func(string, []byte)) {
+		put("/local/written-later", []byte("after the copy"))
+	})
+	require.NoError(t, convertBadgerRepo(dataDir))
+	requireConverted(t, dataDir, want)
+}
+
+// A copy damaged after its marker (a block lost) is not switched to: it is made again.
+func TestConvertBadgerRepoCopiesAgainADamagedCopy(t *testing.T) {
+	dataDir, want := badgerRepo(t, 50, 1)
+	keys, ok := copyBadgerStore(dataDir, 1)
+	require.True(t, ok)
+	fingerprint, err := badgerFingerprint(filepath.Join(dataDir, badgerDirName))
+	require.NoError(t, err)
+	require.NoError(t, writeConversionState(dataDir, badgerConversionState{Step: stepCopied, Keys: keys, Attempts: 1, Badger: fingerprint}))
+	files, err := filepath.Glob(filepath.Join(dataDir, flatfsDirName, "*", "*.data"))
+	require.NoError(t, err)
+	require.NoError(t, os.Remove(files[0]))
+
+	require.NoError(t, convertBadgerRepo(dataDir))
+	requireConverted(t, dataDir, want)
+}
+
+// The old store cannot be deleted (a file held open, as on Windows): the node starts, and a later start deletes it.
+func TestConvertBadgerRepoRetriesTheCleanup(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root deletes read-only directories")
+	}
+	dataDir, want := badgerRepo(t, 50, 1)
+	require.NoError(t, convertBadgerRepo(dataDir))
+	old := filepath.Join(dataDir, badgerOldDirName)
+	require.NoError(t, os.Chmod(old, 0500))
+	t.Cleanup(func() { _ = os.Chmod(old, 0700) })
+
+	require.NoError(t, convertBadgerRepo(dataDir))
+	requireConverted(t, dataDir, want)
+	require.True(t, exists(t, old))
+	require.Equal(t, stepSwitched, readState(t, dataDir).Step)
+
+	require.NoError(t, os.Chmod(old, 0700))
+	require.NoError(t, convertBadgerRepo(dataDir))
+	requireCleaned(t, dataDir)
+}
+
+func TestConvertBadgerRepoLeavesOtherRepos(t *testing.T) {
+	dataDir := t.TempDir()
+	config, err := ipfsConf.Init(io.Discard, 2048)
+	require.NoError(t, err)
+	require.NoError(t, ipfsConf.Profiles[defaultIpfsDatastoreProfile].Transform(config))
+	require.NoError(t, fsrepo.Init(dataDir, config))
+	before, err := os.ReadFile(filepath.Join(dataDir, "config"))
+	require.NoError(t, err)
+
+	require.NoError(t, convertBadgerRepo(dataDir))
+	after, err := os.ReadFile(filepath.Join(dataDir, "config"))
+	require.NoError(t, err)
+	require.Equal(t, before, after)
+
+	// A stray marker, unreadable or at a step that does not apply, is dropped; the node starts.
+	for _, marker := range []string{`{"step":"other"}`, `{not json`} {
+		require.NoError(t, os.WriteFile(filepath.Join(dataDir, badgerConversionMarker), []byte(marker), 0600))
+		require.NoError(t, convertBadgerRepo(dataDir))
+		require.False(t, exists(t, filepath.Join(dataDir, badgerConversionMarker)))
+	}
+}
+
+// The node's start converts the official node's repository and keeps its identity.
+func TestConfigureIpfsConvertsBadgerRepo(t *testing.T) {
+	dataDir, want := badgerRepo(t, 20, 1)
+	raw, err := os.ReadFile(filepath.Join(dataDir, "config"))
+	require.NoError(t, err)
+	var before map[string]any
+	require.NoError(t, json.Unmarshal(raw, &before))
+
+	configured, err := configureIpfs(testIpfsConfig(dataDir), eventbus.New())
+	require.NoError(t, err)
+	require.True(t, specHasType(configured.Datastore.Spec, "flatfs"))
+	require.False(t, specHasType(configured.Datastore.Spec, "badgerds"))
+	require.Equal(t, before["Identity"].(map[string]any)["PeerID"], configured.Identity.PeerID)
+	requireConverted(t, dataDir, want)
+}

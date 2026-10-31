@@ -155,10 +155,32 @@ func dropRemovedKeys(conf map[string]any) error {
 	return nil
 }
 
+// writeFileAtomic replaces file with data: written and synced to a temporary file, renamed over file, then the
+// directory synced, so that a crash leaves the old content or the new one, never an empty file.
 func writeFileAtomic(file string, data []byte) error {
 	tmp := file + ".tmp"
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, file)
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, file); err != nil {
+		return err
+	}
+	// Best effort: some systems (Windows) cannot sync a directory.
+	if dir, err := os.Open(filepath.Dir(file)); err == nil {
+		_ = dir.Sync()
+		_ = dir.Close()
+	}
+	return nil
 }
