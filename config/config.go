@@ -48,6 +48,9 @@ type Config struct {
 	Mempool          *Mempool
 	Database         *DatabaseConfig
 
+	// PprofPort, when not 0, serves the Go runtime profiles (net/http/pprof) on 127.0.0.1 at that port. Off by default.
+	PprofPort int
+
 	// nodeKey is the node key given by the app that runs the node (UseNodeKey); nil: the key file.
 	nodeKey *ecdsa.PrivateKey
 }
@@ -370,6 +373,9 @@ func applyCommonFlags(ctx *cli.Context, cfg *Config) {
 	if ctx.IsSet(AutoOnline.Name) {
 		cfg.AutoOnline = ctx.Bool(AutoOnline.Name)
 	}
+	if ctx.IsSet(PprofPortFlag.Name) {
+		cfg.PprofPort = ctx.Int(PprofPortFlag.Name)
+	}
 }
 
 func applySyncFlags(ctx *cli.Context, cfg *Config) {
@@ -458,6 +464,9 @@ func applyIpfsFlags(ctx *cli.Context, cfg *Config) {
 }
 
 func validateConfig(cfg *Config) error {
+	if cfg.PprofPort < 0 || cfg.PprofPort > 65535 {
+		return errors.Errorf("pprof port %d is out of range (0 to 65535)", cfg.PprofPort)
+	}
 	if err := validateDatabaseConfig(cfg.Database); err != nil {
 		return err
 	}

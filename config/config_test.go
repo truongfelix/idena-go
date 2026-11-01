@@ -368,6 +368,7 @@ func newTestContext(t *testing.T) *cli.Context {
 		DirectPeersFlag,
 		IpfsLowWaterFlag,
 		IpfsHighWaterFlag,
+		PprofPortFlag,
 	}
 	flagSet := flag.NewFlagSet("test", flag.ContinueOnError)
 	for _, f := range app.Flags {
@@ -562,4 +563,43 @@ func TestMakeMobileConfigReadsPeerAndIpfsConnectionLimits(t *testing.T) {
 	require.Equal(t, 50, cfg.IpfsConf.LowWater)
 	require.Equal(t, 100, cfg.IpfsConf.HighWater)
 	require.Equal(t, DefaultIpfsPort, cfg.IpfsConf.IpfsPort)
+}
+
+func TestPprofPortIsOffByDefault(t *testing.T) {
+	cfg, err := MakeConfig(newTestContext(t), func(cfg *Config) {})
+	require.NoError(t, err)
+	require.Zero(t, cfg.PprofPort)
+}
+
+func TestPprofPortFromFlag(t *testing.T) {
+	ctx := newTestContext(t)
+	require.NoError(t, ctx.Set(PprofPortFlag.Name, "6060"))
+
+	cfg, err := MakeConfig(ctx, func(cfg *Config) {})
+
+	require.NoError(t, err)
+	require.Equal(t, 6060, cfg.PprofPort)
+}
+
+func TestPprofPortFromConfigFile(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "config.json")
+	require.NoError(t, os.WriteFile(file, []byte(`{"PprofPort":6061}`), 0600))
+	ctx := newTestContext(t)
+	require.NoError(t, ctx.Set(CfgFileFlag.Name, file))
+
+	cfg, err := MakeConfig(ctx, func(cfg *Config) {})
+
+	require.NoError(t, err)
+	require.Equal(t, 6061, cfg.PprofPort)
+}
+
+func TestMakeConfigRejectsPprofPortOutOfRange(t *testing.T) {
+	for _, value := range []string{"-1", "65536"} {
+		ctx := newTestContext(t)
+		require.NoError(t, ctx.Set(PprofPortFlag.Name, value))
+
+		_, err := MakeConfig(ctx, func(cfg *Config) {})
+
+		require.ErrorContains(t, err, "pprof port")
+	}
 }

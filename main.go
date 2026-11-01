@@ -59,6 +59,7 @@ func main() {
 		config.LogFileSizeFlag,
 		config.LogColoring,
 		config.AutoOnline,
+		config.PprofPortFlag,
 	}
 
 	app.Action = func(context *cli.Context) error {
@@ -100,6 +101,14 @@ func main() {
 		log.Root().SetHandler(log.LvlFilterHandler(logLvl, log.MultiHandler(handler, fileHandler)))
 
 		log.Info("Idena node is starting", "version", version)
+
+		if cfg.PprofPort != 0 {
+			addr, err := startPprofServer(cfg.PprofPort)
+			if err != nil {
+				return err
+			}
+			log.Info("Serving Go runtime profiles", "url", "http://"+addr+"/debug/pprof/")
+		}
 
 		n, err := node.NewNode(cfg, version)
 		if err != nil {
