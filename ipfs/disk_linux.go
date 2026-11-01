@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -19,8 +20,13 @@ func diskFreeBytes(dir string) (int64, error) {
 	return int64(stat.Bavail) * int64(stat.Frsize), nil
 }
 
-// canDropFileCache: dropFileCache drops pages here.
-const canDropFileCache = true
+// syncsFilesystem: syncCopied needs no list of the files written.
+const syncsFilesystem = true
+
+// syncCopied puts the copy written so far on disk: syncfs flushes the whole filesystem, both stores included.
+func syncCopied(flatfsDir string, _ []string, _ string, _ time.Time) error {
+	return syncTree(flatfsDir)
+}
 
 // syncTree puts every file written under dir on disk: syncfs flushes the whole filesystem holding it.
 func syncTree(dir string) error {

@@ -231,7 +231,7 @@ func TestConvertBadgerRepoFinishesAfterTheCopy(t *testing.T) {
 	for _, switched := range []bool{false, true} {
 		t.Run(fmt.Sprintf("switched=%v", switched), func(t *testing.T) {
 			dataDir, want := badgerRepo(t, 50, 1)
-			keys, ok := copyBadgerStore(dataDir, 1)
+			keys, ok := copyBadgerStore(dataDir, badgerConversionState{Step: stepCopying, Attempts: 1})
 			require.True(t, ok)
 			require.EqualValues(t, len(want), keys)
 			fingerprint, err := badgerFingerprint(filepath.Join(dataDir, badgerDirName))
@@ -254,7 +254,7 @@ func TestConvertBadgerRepoFinishesAfterTheCopy(t *testing.T) {
 // A copy made, then Badger written again (an older build run after a crash): the copy is outdated and made again.
 func TestConvertBadgerRepoCopiesAgainAfterBadgerChanged(t *testing.T) {
 	dataDir, want := badgerRepo(t, 50, 1)
-	keys, ok := copyBadgerStore(dataDir, 1)
+	keys, ok := copyBadgerStore(dataDir, badgerConversionState{Step: stepCopying, Attempts: 1})
 	require.True(t, ok)
 	fingerprint, err := badgerFingerprint(filepath.Join(dataDir, badgerDirName))
 	require.NoError(t, err)
@@ -270,7 +270,7 @@ func TestConvertBadgerRepoCopiesAgainAfterBadgerChanged(t *testing.T) {
 // A copy damaged after its marker (a block lost) is not switched to: it is made again.
 func TestConvertBadgerRepoCopiesAgainADamagedCopy(t *testing.T) {
 	dataDir, want := badgerRepo(t, 50, 1)
-	keys, ok := copyBadgerStore(dataDir, 1)
+	keys, ok := copyBadgerStore(dataDir, badgerConversionState{Step: stepCopying, Attempts: 1})
 	require.True(t, ok)
 	fingerprint, err := badgerFingerprint(filepath.Join(dataDir, badgerDirName))
 	require.NoError(t, err)
@@ -441,13 +441,13 @@ func TestConvertBadgerRepoWaitsForTheValidation(t *testing.T) {
 
 func TestConvertBadgerRepoFlushesTheBlocksAsItCopiesThem(t *testing.T) {
 	dataDir, want := badgerRepo(t, 2500, 1500)
-	oldBytes, oldFlushes := blockFlushBytes, blockFlushes
-	t.Cleanup(func() { blockFlushBytes, blockFlushes = oldBytes, oldFlushes })
+	oldBytes, oldCheckpoints := blockFlushBytes, copyCheckpoints
+	t.Cleanup(func() { blockFlushBytes, copyCheckpoints = oldBytes, oldCheckpoints })
 	// The 2500 blocks hold about 400 KB: a flush every 64 KiB, and one after the blocks.
-	blockFlushBytes, blockFlushes = 64<<10, 0
+	blockFlushBytes, copyCheckpoints = 64<<10, 0
 	require.NoError(t, convertBadgerRepo(dataDir, time.Time{}))
 	requireConverted(t, dataDir, want)
-	require.GreaterOrEqual(t, blockFlushes, 5)
+	require.GreaterOrEqual(t, copyCheckpoints, 5)
 }
 
 // The per-file sync (macOS, Windows) runs on a flatfs tree, whose _README is read-only.
@@ -460,4 +460,79 @@ func TestSyncEachFileSkipsReadOnlyFiles(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "AB"), 0700))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "AB", "block.data"), []byte("block"), 0600))
 	require.NoError(t, syncEachFile(dir))
+}
+
+// stopCopy makes the copies of this test stop as a quit would, after stopAt checkpoints of one start.
+func stopCopy(t *testing.T, flushBytes int, every time.Duration, stopAt int) {
+	oldBytes, oldEvery, oldStop := blockFlushBytes, checkpointEvery, stopCopyAt
+	t.Cleanup(func() { blockFlushBytes, checkpointEvery, stopCopyAt = oldBytes, oldEvery, oldStop })
+	blockFlushBytes, checkpointEvery, stopCopyAt = flushBytes, every, stopAt
+}
+
+// markCopiedBlock dates one block file of the copy far back: a copy made again rewrites it, a resumed one does not.
+func markCopiedBlock(t *testing.T, dataDir string) string {
+	files, err := filepath.Glob(filepath.Join(dataDir, flatfsDirName, "*", "*.data"))
+	require.NoError(t, err)
+	require.NotEmpty(t, files)
+	old := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+	require.NoError(t, os.Chtimes(files[0], old, old))
+	return files[0]
+}
+
+func modifiedIn2000(t *testing.T, path string) bool {
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	return info.ModTime().Year() == 2000
+}
+
+// A start stopped during the copy: the next one goes on from the last checkpoint, wherever it was.
+func TestConvertBadgerRepoResumesAStoppedCopy(t *testing.T) {
+	for _, c := range []struct {
+		name       string
+		flushBytes int
+		every      time.Duration
+		stopAt     int
+	}{
+		{"in the blocks", 8 << 10, time.Hour, 2},
+		{"after the blocks", 1 << 30, time.Hour, 1},
+		{"in the other keys", 1 << 30, time.Nanosecond, 250},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dataDir, want := badgerRepo(t, 200, 300)
+			stopCopy(t, c.flushBytes, c.every, c.stopAt)
+			require.NoError(t, convertBadgerRepo(dataDir, time.Time{}))
+			onBadger, err := isBadgerRepo(dataDir)
+			require.NoError(t, err)
+			require.True(t, onBadger)
+			state := readState(t, dataDir)
+			require.Equal(t, stepCopying, state.Step)
+			require.Equal(t, 1, state.Attempts)
+			require.NotEmpty(t, state.LastKey)
+			require.Greater(t, state.Keys, int64(0))
+			require.Less(t, state.Keys, int64(len(want)))
+			marked := markCopiedBlock(t, dataDir)
+
+			stopCopyAt = 0
+			require.NoError(t, convertBadgerRepo(dataDir, time.Time{}))
+			requireConverted(t, dataDir, want)
+			require.True(t, modifiedIn2000(t, marked), "a block copied before the stop was copied again")
+		})
+	}
+}
+
+// A copy stopped, then Badger written (the official app run in between): the copy is made again from the start.
+func TestConvertBadgerRepoStartsOverAStoppedCopyOfAChangedStore(t *testing.T) {
+	dataDir, want := badgerRepo(t, 200, 300)
+	stopCopy(t, 8<<10, time.Hour, 2)
+	require.NoError(t, convertBadgerRepo(dataDir, time.Time{}))
+	require.NotEmpty(t, readState(t, dataDir).LastKey)
+	marked := markCopiedBlock(t, dataDir)
+	putAll(t, dataDir, want, func(put func(string, []byte)) {
+		put("/local/written-later", []byte("after the stop"))
+	})
+
+	stopCopyAt = 0
+	require.NoError(t, convertBadgerRepo(dataDir, time.Time{}))
+	requireConverted(t, dataDir, want)
+	require.False(t, exists(t, marked) && modifiedIn2000(t, marked), "the stopped copy was kept")
 }
