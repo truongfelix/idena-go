@@ -536,3 +536,16 @@ func TestConvertBadgerRepoStartsOverAStoppedCopyOfAChangedStore(t *testing.T) {
 	requireConverted(t, dataDir, want)
 	require.False(t, exists(t, marked) && modifiedIn2000(t, marked), "the stopped copy was kept")
 }
+
+// The progress counts keys as well as bytes: 15 M small provider records take most of the time on a hard disk.
+func TestCopyProgress(t *testing.T) {
+	require.Equal(t, int64(10+keyWorkBytes), keyWork(10))
+	// Before 30 s, a percent only; 100 waits for the end.
+	require.Equal(t, []any{"percent", int64(25)}, copyProgress(250, 1000, 0, 10*time.Second))
+	require.Equal(t, []any{"percent", int64(99)}, copyProgress(1000, 1000, 0, 10*time.Second))
+	// 300 done in 3 min at this start: 100 a minute, 600 left.
+	require.Equal(t, []any{"percent", int64(40), "minutesLeft", int64(6)}, copyProgress(400, 1000, 100, 3*time.Minute))
+	// A resumed start with nothing done yet has no pace.
+	require.Equal(t, []any{"percent", int64(40)}, copyProgress(400, 1000, 400, 3*time.Minute))
+	require.Empty(t, copyProgress(0, 0, 0, time.Minute))
+}

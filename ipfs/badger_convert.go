@@ -62,8 +62,11 @@ const (
 	badgerConversionMargin = 512 << 20
 	badgerConversionBatch  = 1000
 	// A flatfs block is a file: on disk it takes whole clusters, plus its directory entry.
-	diskCluster           = 4096
-	fileOverhead          = 1024
+	diskCluster  = 4096
+	fileOverhead = 1024
+	// keyWorkBytes: what one key costs the copy, in bytes of value, for its progress. On a hard disk (3.7 GB store,
+	// 2026-11-01) 300 k blocks of 2.1 GB took 7 min and 15 M provider records of 1.6 GB an hour: about 1.3 KB a key.
+	keyWorkBytes          = 1024
 	maxConversionAttempts = 3
 	stepCopying           = "copying"
 	stepCopied            = "copied"
@@ -85,6 +88,8 @@ type badgerConversionState struct {
 	// (keyDiskSize). The copy goes on after LastKey if Badger is unchanged since (Badger: its files at the checkpoint).
 	LastKey []byte `json:"lastKey,omitempty"`
 	Copied  int64  `json:"copied,omitempty"`
+	// Work: the work done so far (keyWork), for the progress the log shows.
+	Work int64 `json:"work,omitempty"`
 }
 
 // blockFlushBytes: the most block bytes copied between two checkpoints (their files then leave the page cache);
@@ -406,7 +411,7 @@ func copyBadgerStore(repoDir string, from badgerConversionState) (keys int64, ok
 	}
 
 	ctx := context.Background()
-	need, err := copySize(ctx, source)
+	need, work, err := copySize(ctx, source)
 	if err != nil {
 		closeSource()
 		abandonConversion(repoDir, from.Attempts, err)
@@ -430,7 +435,7 @@ func copyBadgerStore(repoDir string, from badgerConversionState) (keys int64, ok
 		}
 	}
 
-	keys, err = copyKeys(ctx, source, repoDir, need, from)
+	keys, err = copyKeys(ctx, source, repoDir, need, work, from)
 	closeSource()
 	if err == errCopyStopped {
 		return keys, false
@@ -448,6 +453,11 @@ func copyBadgerStore(repoDir string, from badgerConversionState) (keys int64, ok
 	return keys, true
 }
 
+// keyWork: the share of the copy's time a key takes (keyWorkBytes).
+func keyWork(size int) int64 {
+	return int64(size) + keyWorkBytes
+}
+
 // keyDiskSize: the disk space a key takes in the copy, each block a file of whole clusters, the rest in LevelDB.
 func keyDiskSize(key string, size int) int64 {
 	if strings.HasPrefix(key, blocksPrefix) {
@@ -456,28 +466,42 @@ func keyDiskSize(key string, size int) int64 {
 	return int64(size) + int64(len(key))
 }
 
-// copySize estimates the disk space the whole copy takes.
-func copySize(ctx context.Context, source ds.Datastore) (int64, error) {
+// copySize estimates the disk space the whole copy takes (need) and its work (keyWork).
+func copySize(ctx context.Context, source ds.Datastore) (need, work int64, err error) {
 	results, err := source.Query(ctx, query.Query{KeysOnly: true, ReturnsSizes: true})
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	defer results.Close()
-	var need int64
 	for result := range results.Next() {
 		if result.Error != nil {
-			return 0, errors.Wrap(result.Error, "cannot read the Badger store")
+			return 0, 0, errors.Wrap(result.Error, "cannot read the Badger store")
 		}
 		need += keyDiskSize(result.Key, result.Size)
+		work += keyWork(result.Size)
 	}
-	return need, nil
+	return need, work, nil
+}
+
+// copyProgress: the log fields of a copy's progress, done of work (keyWork) with startDone done before this start
+// and elapsed since: percent (99 at most until the end), and minutesLeft at this start's pace once 30 s passed.
+func copyProgress(done, work, startDone int64, elapsed time.Duration) []any {
+	var fields []any
+	if work > 0 {
+		fields = append(fields, "percent", min(done*100/work, 99))
+	}
+	if elapsed > 30*time.Second && done > startDone {
+		rate := float64(done-startDone) / elapsed.Minutes()
+		fields = append(fields, "minutesLeft", int64(math.Ceil(float64(max(work-done, 0))/rate)))
+	}
+	return fields
 }
 
 // copyKeys copies the keys after from.LastKey, in Badger's order (the blocks first). At each checkpoint the copy is
 // put on disk and the marker records where it stands, for a start after a quit to go on from there: every
 // blockFlushBytes of blocks (their files leave the page cache with it), once past the blocks, at least every
 // checkpointEvery, and at the end.
-func copyKeys(ctx context.Context, source *badgerds.Datastore, repoDir string, need int64, from badgerConversionState) (keys int64, err error) {
+func copyKeys(ctx context.Context, source *badgerds.Datastore, repoDir string, need, work int64, from badgerConversionState) (keys int64, err error) {
 	target, err := openCopy(repoDir)
 	if err != nil {
 		return 0, err
@@ -495,11 +519,11 @@ func copyKeys(ctx context.Context, source *badgerds.Datastore, repoDir string, n
 	flatfsDir := filepath.Join(repoDir, flatfsDirName)
 	leveldbDir := filepath.Join(repoDir, leveldbDirName)
 	shard := flatfs.NextToLast(2).Func()
-	keys, copied, lastKey := from.Keys, from.Copied, from.LastKey
+	keys, copied, done, lastKey := from.Keys, from.Copied, from.Work, from.LastKey
 	// written: the block files since the last checkpoint, where they are synced one by one (not Linux).
 	var written []string
 	pending, blockBytes, checkpoints := 0, 0, 0
-	started, startCopied := time.Now(), copied
+	started, startDone := time.Now(), done
 	lastCheckpoint, lastLog := started, started
 
 	commit := func() error {
@@ -535,7 +559,7 @@ func copyKeys(ctx context.Context, source *badgerds.Datastore, repoDir string, n
 			return err
 		}
 		state := badgerConversionState{Step: stepCopying, Attempts: from.Attempts, Keys: keys, Copied: copied,
-			LastKey: lastKey, Badger: fingerprint}
+			Work: done, LastKey: lastKey, Badger: fingerprint}
 		if err := writeConversionState(repoDir, state); err != nil {
 			return err
 		}
@@ -546,15 +570,7 @@ func copyKeys(ctx context.Context, source *badgerds.Datastore, repoDir string, n
 		return nil
 	}
 	progress := func() []any {
-		fields := []any{"keys", keys}
-		if need > 0 {
-			fields = append(fields, "percent", min(copied*100/need, 99))
-		}
-		if elapsed := time.Since(started); elapsed > 30*time.Second && copied > startCopied {
-			rate := float64(copied-startCopied) / elapsed.Minutes()
-			fields = append(fields, "minutesLeft", int64(math.Ceil(float64(max(need-copied, 0))/rate)))
-		}
-		return fields
+		return append([]any{"keys", keys}, copyProgress(done, work, startDone, time.Since(started))...)
 	}
 
 	txn := source.DB.NewTransaction(false)
@@ -586,6 +602,7 @@ func copyKeys(ctx context.Context, source *badgerds.Datastore, repoDir string, n
 		}
 		keys++
 		copied += keyDiskSize(string(key), len(value))
+		done += keyWork(len(value))
 		lastKey = key
 		if isBlock {
 			blockBytes += len(value)
