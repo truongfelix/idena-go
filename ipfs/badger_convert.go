@@ -46,6 +46,7 @@ const (
 	badgerConversionMarker = "badger-conversion.json"
 	// badgerBackup: the suffix of the Badger config and spec kept until the old store is deleted.
 	badgerBackup      = ".badger.bak"
+	validationGuard   = 4 * time.Hour
 	badgerDirName     = "badgerds"
 	badgerOldDirName  = "badgerds.converted"
 	flatfsDirName     = "blocks"
@@ -132,7 +133,7 @@ func removeConversionState(repoDir string) {
 // convertBadgerRepo converts a Badger repository, finishes a conversion an earlier start left, or does nothing. Its
 // error means the repository cannot be read at all (the spec file); every conversion failure is logged and leaves
 // the repository as it opened before.
-func convertBadgerRepo(repoDir string) error {
+func convertBadgerRepo(repoDir string, nextValidation time.Time) error {
 	state := readConversionState(repoDir)
 	badger, err := isBadgerRepo(repoDir)
 	if err != nil {
@@ -169,6 +170,11 @@ func convertBadgerRepo(repoDir string) error {
 	}
 
 	copied := state != nil && state.Step == stepCopied && state.Badger == fingerprint && copyComplete(repoDir, state.Keys)
+	if !copied && conversionPostponed(nextValidation, time.Now()) {
+		log.Info("The IPFS repository is converted from Badger at a later start: a validation is near",
+			"nextValidation", nextValidation.UTC().Format(time.RFC3339))
+		return nil
+	}
 	if !copied {
 		keys, ok := copyBadgerStore(repoDir, attempts+1)
 		if !ok {
@@ -199,6 +205,18 @@ func convertBadgerRepo(repoDir string) error {
 	}
 	log.Info("IPFS repository converted from Badger", "keys", state.Keys)
 	return nil
+}
+
+// conversionPostponed: the copy takes about an hour on a hard disk with a few gigabytes of Badger, during which the
+// node does not run (no sync, no mining, no validation). It waits while the next validation is less than
+// validationGuard away or under way (its time stays past until the ceremony ends); a time a day past or more is that
+// of a node still behind the chain, unknown (zero) converts.
+func conversionPostponed(nextValidation, now time.Time) bool {
+	if nextValidation.IsZero() {
+		return false
+	}
+	left := nextValidation.Sub(now)
+	return left < validationGuard && left > -24*time.Hour
 }
 
 // abandonConversion leaves the repository on Badger: the copy is removed and the attempt recorded against the Badger

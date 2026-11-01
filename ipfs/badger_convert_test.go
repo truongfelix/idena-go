@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/dgraph-io/badger"
 	"github.com/idena-network/idena-go/common/eventbus"
@@ -139,7 +140,7 @@ func withFreeSpace(t *testing.T, free func(string) (int64, error)) {
 
 func TestConvertBadgerRepoCopiesEveryKey(t *testing.T) {
 	dataDir, want := badgerRepo(t, 2500, 1500)
-	require.NoError(t, convertBadgerRepo(dataDir))
+	require.NoError(t, convertBadgerRepo(dataDir, time.Time{}))
 	requireConverted(t, dataDir, want)
 	require.True(t, exists(t, filepath.Join(dataDir, badgerOldDirName)))
 	require.Equal(t, stepSwitched, readState(t, dataDir).Step)
@@ -149,10 +150,10 @@ func TestConvertBadgerRepoCopiesEveryKey(t *testing.T) {
 	require.JSONEq(t, `{"mounts":[{"mountpoint":"/blocks","path":"blocks","shardFunc":"/repo/flatfs/shard/v1/next-to-last/2","type":"flatfs"},{"mountpoint":"/","path":"datastore","type":"levelds"}],"type":"mount"}`, string(spec))
 
 	// The next start deletes the old store; the one after has nothing to do.
-	require.NoError(t, convertBadgerRepo(dataDir))
+	require.NoError(t, convertBadgerRepo(dataDir, time.Time{}))
 	requireConverted(t, dataDir, want)
 	requireCleaned(t, dataDir)
-	require.NoError(t, convertBadgerRepo(dataDir))
+	require.NoError(t, convertBadgerRepo(dataDir, time.Time{}))
 	requireConverted(t, dataDir, want)
 }
 
@@ -160,7 +161,7 @@ func TestConvertBadgerRepoKeepsBadgerWithoutDiskSpace(t *testing.T) {
 	dataDir, want := badgerRepo(t, 10, 1)
 	withFreeSpace(t, func(string) (int64, error) { return badgerConversionMargin, nil })
 
-	require.NoError(t, convertBadgerRepo(dataDir))
+	require.NoError(t, convertBadgerRepo(dataDir, time.Time{}))
 	requireBadger(t, dataDir, want)
 	require.Nil(t, readState(t, dataDir))
 }
@@ -179,7 +180,7 @@ func TestConvertBadgerRepoDropsAnInterruptedCopy(t *testing.T) {
 				withFreeSpace(t, func(string) (int64, error) { return badgerConversionMargin, nil })
 			}
 
-			require.NoError(t, convertBadgerRepo(dataDir))
+			require.NoError(t, convertBadgerRepo(dataDir, time.Time{}))
 			require.False(t, exists(t, partial))
 			if enoughSpace {
 				requireConverted(t, dataDir, want)
@@ -205,7 +206,7 @@ func TestConvertBadgerRepoFailureKeepsBadger(t *testing.T) {
 	})
 	for attempt := 1; attempt <= maxConversionAttempts; attempt++ {
 		calls = 0
-		require.NoError(t, convertBadgerRepo(dataDir))
+		require.NoError(t, convertBadgerRepo(dataDir, time.Time{}))
 		requireBadger(t, dataDir, want)
 		state := readState(t, dataDir)
 		require.Equal(t, stepFailed, state.Step)
@@ -214,7 +215,7 @@ func TestConvertBadgerRepoFailureKeepsBadger(t *testing.T) {
 
 	// No more attempts, even with the space back.
 	withFreeSpace(t, func(string) (int64, error) { return 1 << 40, nil })
-	require.NoError(t, convertBadgerRepo(dataDir))
+	require.NoError(t, convertBadgerRepo(dataDir, time.Time{}))
 	requireBadger(t, dataDir, want)
 	require.Equal(t, maxConversionAttempts, readState(t, dataDir).Attempts)
 
@@ -239,10 +240,10 @@ func TestConvertBadgerRepoFinishesAfterTheCopy(t *testing.T) {
 				require.NoError(t, switchToFlatfsSpec(dataDir))
 			}
 
-			require.NoError(t, convertBadgerRepo(dataDir))
+			require.NoError(t, convertBadgerRepo(dataDir, time.Time{}))
 			requireConverted(t, dataDir, want)
 			if !switched {
-				require.NoError(t, convertBadgerRepo(dataDir))
+				require.NoError(t, convertBadgerRepo(dataDir, time.Time{}))
 			}
 			requireCleaned(t, dataDir)
 		})
@@ -261,7 +262,7 @@ func TestConvertBadgerRepoCopiesAgainAfterBadgerChanged(t *testing.T) {
 	putAll(t, dataDir, want, func(put func(string, []byte)) {
 		put("/local/written-later", []byte("after the copy"))
 	})
-	require.NoError(t, convertBadgerRepo(dataDir))
+	require.NoError(t, convertBadgerRepo(dataDir, time.Time{}))
 	requireConverted(t, dataDir, want)
 }
 
@@ -277,7 +278,7 @@ func TestConvertBadgerRepoCopiesAgainADamagedCopy(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.Remove(files[0]))
 
-	require.NoError(t, convertBadgerRepo(dataDir))
+	require.NoError(t, convertBadgerRepo(dataDir, time.Time{}))
 	requireConverted(t, dataDir, want)
 }
 
@@ -287,18 +288,18 @@ func TestConvertBadgerRepoRetriesTheCleanup(t *testing.T) {
 		t.Skip("root deletes read-only directories")
 	}
 	dataDir, want := badgerRepo(t, 50, 1)
-	require.NoError(t, convertBadgerRepo(dataDir))
+	require.NoError(t, convertBadgerRepo(dataDir, time.Time{}))
 	old := filepath.Join(dataDir, badgerOldDirName)
 	require.NoError(t, os.Chmod(old, 0500))
 	t.Cleanup(func() { _ = os.Chmod(old, 0700) })
 
-	require.NoError(t, convertBadgerRepo(dataDir))
+	require.NoError(t, convertBadgerRepo(dataDir, time.Time{}))
 	requireConverted(t, dataDir, want)
 	require.True(t, exists(t, old))
 	require.Equal(t, stepSwitched, readState(t, dataDir).Step)
 
 	require.NoError(t, os.Chmod(old, 0700))
-	require.NoError(t, convertBadgerRepo(dataDir))
+	require.NoError(t, convertBadgerRepo(dataDir, time.Time{}))
 	requireCleaned(t, dataDir)
 }
 
@@ -311,7 +312,7 @@ func TestConvertBadgerRepoLeavesOtherRepos(t *testing.T) {
 	before, err := os.ReadFile(filepath.Join(dataDir, "config"))
 	require.NoError(t, err)
 
-	require.NoError(t, convertBadgerRepo(dataDir))
+	require.NoError(t, convertBadgerRepo(dataDir, time.Time{}))
 	after, err := os.ReadFile(filepath.Join(dataDir, "config"))
 	require.NoError(t, err)
 	require.Equal(t, before, after)
@@ -319,7 +320,7 @@ func TestConvertBadgerRepoLeavesOtherRepos(t *testing.T) {
 	// A stray marker, unreadable or at a step that does not apply, is dropped; the node starts.
 	for _, marker := range []string{`{"step":"other"}`, `{not json`} {
 		require.NoError(t, os.WriteFile(filepath.Join(dataDir, badgerConversionMarker), []byte(marker), 0600))
-		require.NoError(t, convertBadgerRepo(dataDir))
+		require.NoError(t, convertBadgerRepo(dataDir, time.Time{}))
 		require.False(t, exists(t, filepath.Join(dataDir, badgerConversionMarker)))
 	}
 }
@@ -358,7 +359,7 @@ func TestConvertBadgerRepoReadsBadgerWithoutChangingIt(t *testing.T) {
 	dataDir, want := badgerRepo(t, 2500, 1500)
 	before, err := badgerFingerprint(filepath.Join(dataDir, badgerDirName))
 	require.NoError(t, err)
-	require.NoError(t, convertBadgerRepo(dataDir))
+	require.NoError(t, convertBadgerRepo(dataDir, time.Time{}))
 	requireConverted(t, dataDir, want)
 	after, err := badgerFingerprint(filepath.Join(dataDir, badgerOldDirName))
 	require.NoError(t, err)
@@ -387,6 +388,34 @@ func TestConvertBadgerRepoConvertsAStoreNotClosed(t *testing.T) {
 	_, err = badgerds.NewDatastore(filepath.Join(dataDir, badgerDirName), badgerReadOptions(true))
 	require.ErrorContains(t, err, badger.ErrReplayNeeded.Error())
 
-	require.NoError(t, convertBadgerRepo(dataDir))
+	require.NoError(t, convertBadgerRepo(dataDir, time.Time{}))
+	requireConverted(t, dataDir, want)
+}
+
+func TestConversionPostponedNearAValidation(t *testing.T) {
+	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	for _, c := range []struct {
+		next      time.Time
+		postponed bool
+	}{
+		{time.Time{}, false},                            // no chain yet
+		{now.Add(validationGuard + time.Minute), false}, // far enough
+		{now.Add(validationGuard - time.Minute), true},
+		{now.Add(time.Minute), true},
+		{now.Add(-2 * time.Hour), true},   // the ceremony is under way
+		{now.Add(-25 * time.Hour), false}, // a node still behind the chain
+	} {
+		require.Equal(t, c.postponed, conversionPostponed(c.next, now), c.next)
+	}
+}
+
+// A validation near: the store stays on Badger for this start, untouched, and converts at a later one.
+func TestConvertBadgerRepoWaitsForTheValidation(t *testing.T) {
+	dataDir, want := badgerRepo(t, 50, 10)
+	require.NoError(t, convertBadgerRepo(dataDir, time.Now().Add(time.Hour)))
+	requireBadger(t, dataDir, want)
+	require.Nil(t, readState(t, dataDir))
+
+	require.NoError(t, convertBadgerRepo(dataDir, time.Now().Add(7*24*time.Hour)))
 	requireConverted(t, dataDir, want)
 }

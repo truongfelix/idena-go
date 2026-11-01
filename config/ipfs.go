@@ -24,6 +24,9 @@ type IpfsConfig struct {
 	// bigger buffer cuts these writes. It costs about 2 times the added buffer in memory (the memtable and
 	// the one being flushed) and applies when the datastore is opened: a change takes a restart.
 	DatastoreWriteBufferMiB int
+	// NextValidation is read from the chain at start (zero: unknown), never saved: an IPFS repository left in Badger
+	// is not converted at a start near a validation, since the node cannot validate while it converts.
+	NextValidation time.Time `json:"-"`
 }
 
 type IpfsGcConfig struct {
