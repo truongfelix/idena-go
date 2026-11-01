@@ -291,15 +291,27 @@ func TestConvertBadgerRepoRetriesTheCleanup(t *testing.T) {
 	dataDir, want := badgerRepo(t, 50, 1)
 	require.NoError(t, convertBadgerRepo(dataDir, time.Time{}))
 	old := filepath.Join(dataDir, badgerOldDirName)
-	require.NoError(t, os.Chmod(old, 0500))
-	t.Cleanup(func() { _ = os.Chmod(old, 0700) })
+	// Unix: a directory without write permission; Windows ignores it, but cannot delete a file held open.
+	release := func() { require.NoError(t, os.Chmod(old, 0700)) }
+	if runtime.GOOS == "windows" {
+		files, err := filepath.Glob(filepath.Join(old, "*.vlog"))
+		require.NoError(t, err)
+		require.NotEmpty(t, files)
+		held, err := os.Open(files[0])
+		require.NoError(t, err)
+		release = func() { require.NoError(t, held.Close()) }
+		t.Cleanup(func() { _ = held.Close() })
+	} else {
+		require.NoError(t, os.Chmod(old, 0500))
+		t.Cleanup(func() { _ = os.Chmod(old, 0700) })
+	}
 
 	require.NoError(t, convertBadgerRepo(dataDir, time.Time{}))
 	requireConverted(t, dataDir, want)
 	require.True(t, exists(t, old))
 	require.Equal(t, stepSwitched, readState(t, dataDir).Step)
 
-	require.NoError(t, os.Chmod(old, 0700))
+	release()
 	require.NoError(t, convertBadgerRepo(dataDir, time.Time{}))
 	requireCleaned(t, dataDir)
 }
@@ -357,6 +369,9 @@ func copyTree(t *testing.T, from, to string) {
 // The store is read without changing it: read-only, so no compaction rewrites its tables (on the node's PC a
 // compaction builds its new tables in memory, gigabytes on a store of a few).
 func TestConvertBadgerRepoReadsBadgerWithoutChangingIt(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Badger v1 has no read-only mode on Windows: the conversion opens it writable there")
+	}
 	dataDir, want := badgerRepo(t, 2500, 1500)
 	before, err := badgerFingerprint(filepath.Join(dataDir, badgerDirName))
 	require.NoError(t, err)
