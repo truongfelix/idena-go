@@ -79,6 +79,13 @@ type badgerConversionState struct {
 	Badger string `json:"badger,omitempty"`
 }
 
+// blockFlushBytes: the block bytes copied between two flushes of the block files to disk and out of the page cache;
+// a variable so that tests can set it. blockFlushes counts the flushes, for the tests.
+var (
+	blockFlushBytes = 256 << 20
+	blockFlushes    int
+)
+
 // freeDiskSpace is the free space of the disk holding dir; a variable so that tests can set it.
 var freeDiskSpace = diskFreeBytes
 
@@ -451,27 +458,43 @@ func copyKeys(ctx context.Context, source ds.Datastore, repoDir string, need int
 	pending := 0
 	lastLog := time.Now()
 	blocksDone := false
+	blockBytes := 0
+	flatfsDir := filepath.Join(repoDir, flatfsDirName)
+	flushBlocks := func() error {
+		if err := batch.Commit(ctx); err != nil {
+			return err
+		}
+		if batch, err = target.Batch(ctx); err != nil {
+			return err
+		}
+		pending = 0
+		blockBytes = 0
+		if err := syncTree(flatfsDir); err != nil {
+			return errors.Wrap(err, "cannot put the copied blocks on disk")
+		}
+		dropFileCache(flatfsDir)
+		blockFlushes++
+		return nil
+	}
 	log.Info("Converting the IPFS repository from Badger", "estimatedMiB", need>>20)
 	for result := range results.Next() {
 		if result.Error != nil {
 			return keys, errors.Wrap(result.Error, "cannot read the Badger store")
 		}
-		// The keys come in order, the blocks first: once past them, the block files just written (gigabytes of page
-		// cache in the node's cgroup) are put on disk and their pages dropped.
+		// The keys come in order, the blocks first. The block files just written stay in the page cache, charged to
+		// the node's cgroup: every blockFlushBytes and once past the blocks, they are put on disk and dropped.
 		if !blocksDone && keys > 0 && !strings.HasPrefix(result.Key, "/blocks/") {
 			blocksDone = true
-			if err := batch.Commit(ctx); err != nil {
+			if err := flushBlocks(); err != nil {
 				return keys, err
 			}
-			if batch, err = target.Batch(ctx); err != nil {
-				return keys, err
+		}
+		if !blocksDone {
+			if blockBytes += len(result.Value); blockBytes >= blockFlushBytes {
+				if err := flushBlocks(); err != nil {
+					return keys, err
+				}
 			}
-			pending = 0
-			flatfsDir := filepath.Join(repoDir, flatfsDirName)
-			if err := syncTree(flatfsDir); err != nil {
-				return keys, errors.Wrap(err, "cannot put the copied blocks on disk")
-			}
-			dropFileCache(flatfsDir)
 		}
 		if err := batch.Put(ctx, ds.RawKey(result.Key), result.Value); err != nil {
 			return keys, errors.Wrapf(err, "cannot copy %s", result.Key)

@@ -419,3 +419,14 @@ func TestConvertBadgerRepoWaitsForTheValidation(t *testing.T) {
 	require.NoError(t, convertBadgerRepo(dataDir, time.Now().Add(7*24*time.Hour)))
 	requireConverted(t, dataDir, want)
 }
+
+func TestConvertBadgerRepoFlushesTheBlocksAsItCopiesThem(t *testing.T) {
+	dataDir, want := badgerRepo(t, 2500, 1500)
+	oldBytes, oldFlushes := blockFlushBytes, blockFlushes
+	t.Cleanup(func() { blockFlushBytes, blockFlushes = oldBytes, oldFlushes })
+	// The 2500 blocks hold about 400 KB: a flush every 64 KiB, and one after the blocks.
+	blockFlushBytes, blockFlushes = 64<<10, 0
+	require.NoError(t, convertBadgerRepo(dataDir, time.Time{}))
+	requireConverted(t, dataDir, want)
+	require.GreaterOrEqual(t, blockFlushes, 5)
+}
