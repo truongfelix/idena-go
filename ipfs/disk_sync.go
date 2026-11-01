@@ -6,7 +6,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"time"
 )
 
 // syncEachFile syncs every regular file under dir.
@@ -34,7 +33,7 @@ func syncFile(path string) error {
 	if err != nil {
 		return err
 	}
-	syncErr := f.Sync()
+	syncErr := fsyncFile(f)
 	if err := f.Close(); syncErr == nil {
 		syncErr = err
 	}
@@ -49,23 +48,4 @@ func syncFiles(paths []string) error {
 		}
 	}
 	return nil
-}
-
-// syncChangedSince syncs the files under dir modified since a moment (two seconds earlier: file times can be coarse).
-func syncChangedSince(dir string, since time.Time) error {
-	since = since.Add(-2 * time.Second)
-	return filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil || !entry.Type().IsRegular() {
-			return err
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		// LevelDB's LOCK holds no data, and Windows refuses to open it while LevelDB has it open.
-		if info.ModTime().Before(since) || info.Mode().Perm()&0200 == 0 || entry.Name() == "LOCK" {
-			return nil
-		}
-		return syncFile(path)
-	})
 }

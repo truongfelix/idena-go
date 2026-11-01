@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -49,6 +50,9 @@ func badgerRepo(t *testing.T, blocks, others int) (string, map[string][]byte) {
 		for i := 0; i < others; i++ {
 			put(fmt.Sprintf("/providers/CIQA%d/CIQB", i), []byte(fmt.Sprintf("provider record %d", i)))
 		}
+		// Upper-case namespaces, as the DHT's records, sort before the blocks.
+		put("/CIQDHTRECORDA/record", []byte("a DHT record"))
+		put("/CIQDHTRECORDB/record", []byte("another DHT record"))
 		put("/local/filesroot", []byte("root"))
 		put("/pins/state", []byte{0x1, 0x2})
 	})
@@ -462,11 +466,70 @@ func TestSyncEachFileSkipsReadOnlyFiles(t *testing.T) {
 	require.NoError(t, syncEachFile(dir))
 }
 
-// stopCopy makes the copies of this test stop as a quit would, after stopAt checkpoints of one start.
-func stopCopy(t *testing.T, flushBytes int, every time.Duration, stopAt int) {
-	oldBytes, oldEvery, oldStop := blockFlushBytes, checkpointEvery, stopCopyAt
-	t.Cleanup(func() { blockFlushBytes, checkpointEvery, stopCopyAt = oldBytes, oldEvery, oldStop })
-	blockFlushBytes, checkpointEvery, stopCopyAt = flushBytes, every, stopAt
+// copyTuning sets the checkpoints of this test's copies: every flushBytes of blocks, every every.
+func copyTuning(t *testing.T, flushBytes int, every time.Duration) {
+	oldBytes, oldEvery := blockFlushBytes, checkpointEvery
+	t.Cleanup(func() { blockFlushBytes, checkpointEvery = oldBytes, oldEvery })
+	blockFlushBytes, checkpointEvery = flushBytes, every
+}
+
+// The child process of killDuringCopy: it converts, and waits after the given checkpoint to be killed.
+type copyKillHelper struct {
+	DataDir    string
+	Paused     string
+	FlushBytes int
+	Every      time.Duration
+	PauseAt    int
+}
+
+const copyKillHelperEnv = "IDENA_COPY_KILL_HELPER"
+
+// TestCopyKillHelperProcess is no test of its own: killDuringCopy runs it in a child process.
+func TestCopyKillHelperProcess(t *testing.T) {
+	raw := os.Getenv(copyKillHelperEnv)
+	if raw == "" {
+		t.Skip("run by killDuringCopy")
+	}
+	var helper copyKillHelper
+	require.NoError(t, json.Unmarshal([]byte(raw), &helper))
+	blockFlushBytes, checkpointEvery = helper.FlushBytes, helper.Every
+	afterCheckpoint = func(checkpoints int) {
+		if checkpoints >= helper.PauseAt {
+			require.NoError(t, os.WriteFile(helper.Paused, nil, 0600))
+			select {}
+		}
+	}
+	require.NoError(t, convertBadgerRepo(helper.DataDir, time.Time{}))
+	t.Fatal("the copy ended before its pause")
+}
+
+// killDuringCopy converts dataDir in a child process and kills it (SIGKILL, TerminateProcess on Windows) after its
+// pauseAt-th checkpoint: nothing is closed, as with a quit, a crash or the system's memory killer.
+func killDuringCopy(t *testing.T, dataDir string, flushBytes int, every time.Duration, pauseAt int) {
+	paused := filepath.Join(t.TempDir(), "paused")
+	raw, err := json.Marshal(copyKillHelper{DataDir: dataDir, Paused: paused, FlushBytes: flushBytes, Every: every,
+		PauseAt: pauseAt})
+	require.NoError(t, err)
+	cmd := exec.Command(os.Args[0], "-test.run=^TestCopyKillHelperProcess$", "-test.count=1")
+	cmd.Env = append(os.Environ(), copyKillHelperEnv+"="+string(raw))
+	var output bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &output, &output
+	require.NoError(t, cmd.Start())
+	ended := make(chan error, 1)
+	go func() { ended <- cmd.Wait() }()
+	deadline := time.After(3 * time.Minute)
+	for !exists(t, paused) {
+		select {
+		case err := <-ended:
+			t.Fatalf("the copy's process ended before its pause (%v):\n%s", err, output.String())
+		case <-deadline:
+			_ = cmd.Process.Kill()
+			t.Fatalf("the copy's process did not pause:\n%s", output.String())
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	require.NoError(t, cmd.Process.Kill())
+	<-ended
 }
 
 // markCopiedBlock dates one block file of the copy far back: a copy made again rewrites it, a resumed one does not.
@@ -485,13 +548,19 @@ func modifiedIn2000(t *testing.T, path string) bool {
 	return info.ModTime().Year() == 2000
 }
 
-// A start stopped during the copy: the next one goes on from the last checkpoint, wherever it was.
-func TestConvertBadgerRepoResumesAStoppedCopy(t *testing.T) {
+func requireOnBadger(t *testing.T, dataDir string) {
+	onBadger, err := isBadgerRepo(dataDir)
+	require.NoError(t, err)
+	require.True(t, onBadger)
+}
+
+// A node killed during the copy: the next start goes on from the last checkpoint, wherever it was.
+func TestConvertBadgerRepoResumesAfterAKill(t *testing.T) {
 	for _, c := range []struct {
 		name       string
 		flushBytes int
 		every      time.Duration
-		stopAt     int
+		pauseAt    int
 	}{
 		{"in the blocks", 8 << 10, time.Hour, 2},
 		{"after the blocks", 1 << 30, time.Hour, 1},
@@ -499,42 +568,143 @@ func TestConvertBadgerRepoResumesAStoppedCopy(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			dataDir, want := badgerRepo(t, 200, 300)
-			stopCopy(t, c.flushBytes, c.every, c.stopAt)
-			require.NoError(t, convertBadgerRepo(dataDir, time.Time{}))
-			onBadger, err := isBadgerRepo(dataDir)
-			require.NoError(t, err)
-			require.True(t, onBadger)
+			killDuringCopy(t, dataDir, c.flushBytes, c.every, c.pauseAt)
+			requireOnBadger(t, dataDir)
 			state := readState(t, dataDir)
 			require.Equal(t, stepCopying, state.Step)
 			require.Equal(t, 1, state.Attempts)
+			require.Equal(t, 1, state.Starts)
 			require.NotEmpty(t, state.LastKey)
 			require.Greater(t, state.Keys, int64(0))
 			require.Less(t, state.Keys, int64(len(want)))
+			if c.name == "after the blocks" {
+				require.True(t, bytes.HasPrefix(state.LastKey, []byte(blocksPrefix)), string(state.LastKey))
+			}
 			marked := markCopiedBlock(t, dataDir)
 
-			stopCopyAt = 0
+			copyTuning(t, c.flushBytes, time.Hour)
 			require.NoError(t, convertBadgerRepo(dataDir, time.Time{}))
 			requireConverted(t, dataDir, want)
-			require.True(t, modifiedIn2000(t, marked), "a block copied before the stop was copied again")
+			require.True(t, modifiedIn2000(t, marked), "a block copied before the kill was copied again")
 		})
 	}
 }
 
-// A copy stopped, then Badger written (the official app run in between): the copy is made again from the start.
-func TestConvertBadgerRepoStartsOverAStoppedCopyOfAChangedStore(t *testing.T) {
+// A copy killed, then Badger written (the official app run in between): the copy is made again from the start.
+func TestConvertBadgerRepoStartsOverAKilledCopyOfAChangedStore(t *testing.T) {
 	dataDir, want := badgerRepo(t, 200, 300)
-	stopCopy(t, 8<<10, time.Hour, 2)
-	require.NoError(t, convertBadgerRepo(dataDir, time.Time{}))
+	killDuringCopy(t, dataDir, 8<<10, time.Hour, 2)
 	require.NotEmpty(t, readState(t, dataDir).LastKey)
 	marked := markCopiedBlock(t, dataDir)
 	putAll(t, dataDir, want, func(put func(string, []byte)) {
-		put("/local/written-later", []byte("after the stop"))
+		put("/local/written-later", []byte("after the kill"))
 	})
 
-	stopCopyAt = 0
 	require.NoError(t, convertBadgerRepo(dataDir, time.Time{}))
 	requireConverted(t, dataDir, want)
-	require.False(t, exists(t, marked) && modifiedIn2000(t, marked), "the stopped copy was kept")
+	require.False(t, exists(t, marked) && modifiedIn2000(t, marked), "the killed copy was kept")
+}
+
+// Badger's LOCK (deleted by Windows when the process that opened the store ends) is not part of its state.
+func TestBadgerFingerprintLeavesOutTheLock(t *testing.T) {
+	dataDir, _ := badgerRepo(t, 10, 1)
+	dir := filepath.Join(dataDir, badgerDirName)
+	_ = os.Remove(filepath.Join(dir, "LOCK"))
+	without, err := badgerFingerprint(dir)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "LOCK"), []byte("1234"), 0600))
+	with, err := badgerFingerprint(dir)
+	require.NoError(t, err)
+	require.Equal(t, without, with)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "MANIFEST.extra"), []byte("x"), 0600))
+	changed, err := badgerFingerprint(dir)
+	require.NoError(t, err)
+	require.NotEqual(t, without, changed)
+}
+
+// A copy killed at every start (memory, a crash at the same key) is given up after maxCopyStarts starts: the node
+// then runs on Badger instead of copying at each start.
+func TestConvertBadgerRepoGivesUpACopyKilledAtEachStart(t *testing.T) {
+	for _, starts := range []int{maxCopyStarts - 1, maxCopyStarts} {
+		t.Run(fmt.Sprintf("starts=%d", starts), func(t *testing.T) {
+			dataDir, want := badgerRepo(t, 50, 1)
+			require.NoError(t, writeConversionState(dataDir, badgerConversionState{Step: stepCopying, Attempts: 2,
+				Starts: starts}))
+			require.NoError(t, convertBadgerRepo(dataDir, time.Time{}))
+			if starts < maxCopyStarts {
+				requireConverted(t, dataDir, want)
+				return
+			}
+			requireBadger(t, dataDir, want)
+			state := readState(t, dataDir)
+			require.Equal(t, stepFailed, state.Step)
+			require.Equal(t, maxConversionAttempts, state.Attempts)
+			// And not tried again.
+			require.NoError(t, convertBadgerRepo(dataDir, time.Time{}))
+			requireBadger(t, dataDir, want)
+		})
+	}
+}
+
+// A panic in the copy is a failed attempt: the copy goes, the repository stays on Badger.
+func TestConvertBadgerRepoTakesAPanicInTheCopyAsAFailure(t *testing.T) {
+	dataDir, want := badgerRepo(t, 200, 300)
+	copyTuning(t, 8<<10, time.Hour)
+	afterCheckpoint = func(int) { panic("a damaged table") }
+	t.Cleanup(func() { afterCheckpoint = nil })
+	require.NoError(t, convertBadgerRepo(dataDir, time.Time{}))
+	requireBadger(t, dataDir, want)
+	state := readState(t, dataDir)
+	require.Equal(t, stepFailed, state.Step)
+	require.Equal(t, 1, state.Attempts)
+}
+
+// A crash cut the switch in two (the config on flatfs, the spec still Badger), and the copy is no longer usable (the
+// official app wrote Badger since): the repository goes back to Badger whole, and kubo opens it.
+func TestConvertBadgerRepoUndoesAHalfSwitch(t *testing.T) {
+	near := time.Now().Add(time.Hour)
+	for _, postponed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("postponed=%v", postponed), func(t *testing.T) {
+			dataDir, want := badgerRepo(t, 50, 1)
+			keys, ok := copyBadgerStore(dataDir, badgerConversionState{Step: stepCopying, Attempts: 1})
+			require.True(t, ok)
+			require.NoError(t, writeConversionState(dataDir, badgerConversionState{Step: stepCopied, Keys: keys,
+				Attempts: 1, Badger: "files before the official app ran"}))
+			spec, err := os.ReadFile(filepath.Join(dataDir, datastoreSpecFile))
+			require.NoError(t, err)
+			require.NoError(t, switchToFlatfsSpec(dataDir))
+			require.NoError(t, os.WriteFile(filepath.Join(dataDir, datastoreSpecFile), spec, 0600))
+
+			next := time.Time{}
+			if postponed {
+				next = near
+			}
+			require.NoError(t, convertBadgerRepo(dataDir, next))
+			if postponed {
+				requireBadger(t, dataDir, want)
+				repo, err := fsrepo.Open(dataDir)
+				require.NoError(t, err)
+				require.NoError(t, repo.Close())
+				require.Empty(t, readState(t, dataDir).LastKey)
+			} else {
+				requireConverted(t, dataDir, want)
+			}
+		})
+	}
+}
+
+// A validation near after a killed copy: the node runs on Badger meanwhile, so the copy, which could never be
+// resumed, is deleted (gigabytes on a real store).
+func TestConvertBadgerRepoDropsAKilledCopyWhenPostponed(t *testing.T) {
+	dataDir, want := badgerRepo(t, 200, 300)
+	killDuringCopy(t, dataDir, 8<<10, time.Hour, 2)
+	require.True(t, exists(t, filepath.Join(dataDir, flatfsDirName)))
+	require.NoError(t, convertBadgerRepo(dataDir, time.Now().Add(time.Hour)))
+	requireBadger(t, dataDir, want)
+	state := readState(t, dataDir)
+	require.Equal(t, stepCopying, state.Step)
+	require.Empty(t, state.LastKey)
+	require.Equal(t, 1, state.Starts)
 }
 
 // The progress counts keys as well as bytes: 15 M small provider records take most of the time on a hard disk.
@@ -548,19 +718,4 @@ func TestCopyProgress(t *testing.T) {
 	// A resumed start with nothing done yet has no pace.
 	require.Equal(t, []any{"percent", int64(40)}, copyProgress(400, 1000, 400, 3*time.Minute))
 	require.Empty(t, copyProgress(0, 0, 0, time.Minute))
-}
-
-// The checkpoint's sync of LevelDB's changed files (macOS, Windows) skips its LOCK, which Windows keeps from being
-// opened while LevelDB runs; the files written are synced, an older one is not opened at all.
-func TestSyncChangedSinceSkipsTheLock(t *testing.T) {
-	if os.Getuid() == 0 {
-		t.Skip("root opens read-only files for writing")
-	}
-	dir := t.TempDir()
-	// A LOCK that cannot be opened (write-only, so not skipped as read-only) stands for Windows' locked one.
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "LOCK"), nil, 0600))
-	require.NoError(t, os.Chmod(filepath.Join(dir, "LOCK"), 0200))
-	t.Cleanup(func() { _ = os.Chmod(filepath.Join(dir, "LOCK"), 0600) })
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "000001.log"), []byte("journal"), 0600))
-	require.NoError(t, syncChangedSince(dir, time.Now().Add(-time.Minute)))
 }

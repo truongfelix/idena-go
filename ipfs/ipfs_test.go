@@ -21,6 +21,10 @@ import (
 var proxy Proxy
 
 func init() {
+	// The child process of the kill tests (badger_convert_test.go) runs no IPFS node: the parent's holds the port.
+	if os.Getenv(copyKillHelperEnv) != "" {
+		return
+	}
 	var err error
 	dataDir, err := os.MkdirTemp("", "idena-ipfs-test-*")
 	if err != nil {
