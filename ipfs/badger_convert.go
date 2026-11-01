@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dgraph-io/badger"
 	"github.com/dgraph-io/badger/options"
 	"github.com/idena-network/idena-go/log"
 	ds "github.com/ipfs/go-datastore"
@@ -304,15 +303,15 @@ func badgerFingerprint(dir string) (string, error) {
 
 // openBadgerToRead opens the store without the memory its node use costs: tables read from disk instead of mapped,
 // no value log GC and no compaction (a compaction builds its new tables in memory: gigabytes on a store of a few).
-// Read-only first; a store the official node did not close cleanly needs its value log replayed, which only a
-// writable open does, so that one opens writable with every compaction trigger out of reach.
+// Read-only first. A store the official node did not close cleanly needs its value log replayed, which only a
+// writable open does, and Badger v1 has no read-only mode on Windows: those open writable, with every compaction
+// trigger out of reach.
 func openBadgerToRead(dir string) (*badgerds.Datastore, error) {
 	store, err := badgerds.NewDatastore(dir, badgerReadOptions(true))
-	// Badger wraps it into a new error (errFile) that keeps only its text.
-	if err == nil || !strings.Contains(err.Error(), badger.ErrReplayNeeded.Error()) {
-		return store, err
+	if err == nil {
+		return store, nil
 	}
-	log.Info("The IPFS Badger store was not closed cleanly; it is opened writable, without compaction")
+	log.Info("The IPFS Badger store cannot be opened read-only; it is opened writable, without compaction", "err", err)
 	return badgerds.NewDatastore(dir, badgerReadOptions(false))
 }
 
@@ -469,11 +468,16 @@ func copyKeys(ctx context.Context, source ds.Datastore, repoDir string, need int
 		}
 		pending = 0
 		blockBytes = 0
+		blockFlushes++
+		// Elsewhere than on Linux, nothing drops the pages, and a sync of the tree is a sync of every block file
+		// copied so far: syncCopy alone puts them on disk, once.
+		if !canDropFileCache {
+			return nil
+		}
 		if err := syncTree(flatfsDir); err != nil {
 			return errors.Wrap(err, "cannot put the copied blocks on disk")
 		}
 		dropFileCache(flatfsDir)
-		blockFlushes++
 		return nil
 	}
 	log.Info("Converting the IPFS repository from Badger", "estimatedMiB", need>>20)

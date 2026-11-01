@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -369,6 +370,9 @@ func TestConvertBadgerRepoReadsBadgerWithoutChangingIt(t *testing.T) {
 // A store its node did not close (killed, power cut) holds writes Badger must replay, which a read-only open refuses:
 // it is opened writable, and every key, the replayed ones too, is copied.
 func TestConvertBadgerRepoConvertsAStoreNotClosed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows locks an open store's files: they cannot be copied (every conversion opens writable there)")
+	}
 	dataDir, want := badgerRepo(t, 50, 20)
 	repo, err := fsrepo.Open(dataDir)
 	require.NoError(t, err)
@@ -429,4 +433,16 @@ func TestConvertBadgerRepoFlushesTheBlocksAsItCopiesThem(t *testing.T) {
 	require.NoError(t, convertBadgerRepo(dataDir, time.Time{}))
 	requireConverted(t, dataDir, want)
 	require.GreaterOrEqual(t, blockFlushes, 5)
+}
+
+// The per-file sync (macOS, Windows) runs on a flatfs tree, whose _README is read-only.
+func TestSyncEachFileSkipsReadOnlyFiles(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root opens read-only files for writing")
+	}
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "_README"), []byte("read me"), 0444))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "AB"), 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "AB", "block.data"), []byte("block"), 0600))
+	require.NoError(t, syncEachFile(dir))
 }

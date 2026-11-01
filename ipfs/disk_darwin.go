@@ -13,6 +13,9 @@ func diskFreeBytes(dir string) (int64, error) {
 	return int64(stat.Bavail) * int64(stat.Bsize), nil
 }
 
+// canDropFileCache: dropFileCache drops pages here.
+const canDropFileCache = false
+
 // syncTree puts every file under dir on disk, one by one (File.Sync is F_FULLFSYNC on macOS).
 func syncTree(dir string) error {
 	return syncEachFile(dir)

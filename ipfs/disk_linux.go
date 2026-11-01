@@ -19,6 +19,9 @@ func diskFreeBytes(dir string) (int64, error) {
 	return int64(stat.Bavail) * int64(stat.Frsize), nil
 }
 
+// canDropFileCache: dropFileCache drops pages here.
+const canDropFileCache = true
+
 // syncTree puts every file written under dir on disk: syncfs flushes the whole filesystem holding it.
 func syncTree(dir string) error {
 	f, err := os.Open(dir)

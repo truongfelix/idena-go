@@ -17,6 +17,9 @@ func diskFreeBytes(dir string) (int64, error) {
 	return int64(free), nil
 }
 
+// canDropFileCache: dropFileCache drops pages here.
+const canDropFileCache = false
+
 // syncTree puts every file under dir on disk, one by one (File.Sync is FlushFileBuffers on Windows).
 func syncTree(dir string) error {
 	return syncEachFile(dir)
