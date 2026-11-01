@@ -62,7 +62,8 @@ func syncChangedSince(dir string, since time.Time) error {
 		if err != nil {
 			return err
 		}
-		if info.ModTime().Before(since) || info.Mode().Perm()&0200 == 0 {
+		// LevelDB's LOCK holds no data, and Windows refuses to open it while LevelDB has it open.
+		if info.ModTime().Before(since) || info.Mode().Perm()&0200 == 0 || entry.Name() == "LOCK" {
 			return nil
 		}
 		return syncFile(path)

@@ -549,3 +549,18 @@ func TestCopyProgress(t *testing.T) {
 	require.Equal(t, []any{"percent", int64(40)}, copyProgress(400, 1000, 400, 3*time.Minute))
 	require.Empty(t, copyProgress(0, 0, 0, time.Minute))
 }
+
+// The checkpoint's sync of LevelDB's changed files (macOS, Windows) skips its LOCK, which Windows keeps from being
+// opened while LevelDB runs; the files written are synced, an older one is not opened at all.
+func TestSyncChangedSinceSkipsTheLock(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root opens read-only files for writing")
+	}
+	dir := t.TempDir()
+	// A LOCK that cannot be opened (write-only, so not skipped as read-only) stands for Windows' locked one.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "LOCK"), nil, 0600))
+	require.NoError(t, os.Chmod(filepath.Join(dir, "LOCK"), 0200))
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(dir, "LOCK"), 0600) })
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "000001.log"), []byte("journal"), 0600))
+	require.NoError(t, syncChangedSince(dir, time.Now().Add(-time.Minute)))
+}
