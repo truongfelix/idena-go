@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,7 +38,8 @@ import (
 // The conversion never stops the node: whatever fails before the switch leaves the repository on Badger (the partial
 // copy removed), and after maxConversionAttempts attempts it is no longer tried (deleting the marker allows more).
 // The marker file holds the step reached, so that a start interrupted at any point resumes:
-//   - copying: a copy was being written; it is dropped and made again.
+//   - copying: a copy was being written. It goes on from its last checkpoint if Badger is unchanged since; it is
+//     dropped and made again otherwise.
 //   - copied: the copy is complete and on disk; it is checked (key count, Badger unchanged) and switched to.
 //   - switched: the repository runs on the copy; the Badger store, kept for one start, is deleted.
 //   - failed: the last attempt failed.
@@ -60,13 +62,18 @@ const (
 	badgerConversionMargin = 512 << 20
 	badgerConversionBatch  = 1000
 	// A flatfs block is a file: on disk it takes whole clusters, plus its directory entry.
-	diskCluster           = 4096
-	fileOverhead          = 1024
+	diskCluster  = 4096
+	fileOverhead = 1024
+	// keyWorkBytes: what one key costs the copy, in bytes of value, for its progress. On a hard disk (3.7 GB store,
+	// 2026-11-01) 300 k blocks of 2.1 GB took 7 min and 15 M provider records of 1.6 GB an hour: about 1.3 KB a key.
+	keyWorkBytes          = 1024
 	maxConversionAttempts = 3
 	stepCopying           = "copying"
 	stepCopied            = "copied"
 	stepSwitched          = "switched"
 	stepFailed            = "failed"
+	blocksPrefix          = "/blocks/"
+	flatfsExtension       = ".data"
 )
 
 type badgerConversionState struct {
@@ -77,14 +84,26 @@ type badgerConversionState struct {
 	// Badger: the Badger store's files when the copy was made (badgerFingerprint): a copy is switched to only if
 	// Badger is unchanged since.
 	Badger string `json:"badger,omitempty"`
+	// Copying only, from the first checkpoint: the last key the copy holds on disk, and the space taken so far
+	// (keyDiskSize). The copy goes on after LastKey if Badger is unchanged since (Badger: its files at the checkpoint).
+	LastKey []byte `json:"lastKey,omitempty"`
+	Copied  int64  `json:"copied,omitempty"`
+	// Work: the work done so far (keyWork), for the progress the log shows.
+	Work int64 `json:"work,omitempty"`
 }
 
-// blockFlushBytes: the block bytes copied between two flushes of the block files to disk and out of the page cache;
-// a variable so that tests can set it. blockFlushes counts the flushes, for the tests.
+// blockFlushBytes: the most block bytes copied between two checkpoints (their files then leave the page cache);
+// checkpointEvery: the longest time between two. Variables for the tests, as are copyCheckpoints (the checkpoints
+// made) and stopCopyAt (the copy stops after that many checkpoints of one start, as a quit would; 0 never).
 var (
 	blockFlushBytes = 256 << 20
-	blockFlushes    int
+	checkpointEvery = time.Minute
+	copyCheckpoints int
+	stopCopyAt      int
 )
+
+// errCopyStopped: the copy stopped at stopCopyAt.
+var errCopyStopped = errors.New("the IPFS conversion was stopped")
 
 // freeDiskSpace is the free space of the disk holding dir; a variable so that tests can set it.
 var freeDiskSpace = diskFreeBytes
@@ -183,18 +202,23 @@ func convertBadgerRepo(repoDir string, nextValidation time.Time) error {
 		return nil
 	}
 	if !copied {
-		keys, ok := copyBadgerStore(repoDir, attempts+1)
+		// A copy a quit stopped goes on from its last checkpoint, as the same attempt.
+		from := badgerConversionState{Step: stepCopying, Attempts: attempts + 1}
+		if state != nil && state.Step == stepCopying && len(state.LastKey) > 0 && state.Badger == fingerprint {
+			from = *state
+		}
+		keys, ok := copyBadgerStore(repoDir, from)
 		if !ok {
 			return nil
 		}
 		// The copy closed the Badger store: its files as the next start will find them.
 		if fingerprint, err = badgerFingerprint(filepath.Join(repoDir, badgerDirName)); err != nil {
-			abandonConversion(repoDir, attempts+1, err)
+			abandonConversion(repoDir, from.Attempts, err)
 			return nil
 		}
-		state = &badgerConversionState{Step: stepCopied, Keys: keys, Attempts: attempts + 1, Badger: fingerprint}
+		state = &badgerConversionState{Step: stepCopied, Keys: keys, Attempts: from.Attempts, Badger: fingerprint}
 		if err := writeConversionState(repoDir, *state); err != nil {
-			abandonConversion(repoDir, attempts+1, err)
+			abandonConversion(repoDir, from.Attempts, err)
 			return nil
 		}
 	}
@@ -304,15 +328,15 @@ func badgerFingerprint(dir string) (string, error) {
 
 // openBadgerToRead opens the store without the memory its node use costs: tables read from disk instead of mapped,
 // no value log GC and no compaction (a compaction builds its new tables in memory: gigabytes on a store of a few).
-// Read-only first; a store the official node did not close cleanly needs its value log replayed, which only a
-// writable open does, so that one opens writable with every compaction trigger out of reach.
+// Read-only first. A store the official node did not close cleanly needs its value log replayed, which only a
+// writable open does, and Badger v1 has no read-only mode on Windows: those open writable, with every compaction
+// trigger out of reach.
 func openBadgerToRead(dir string) (*badgerds.Datastore, error) {
 	store, err := badgerds.NewDatastore(dir, badgerReadOptions(true))
-	// Badger wraps it into a new error (errFile) that keeps only its text.
-	if err == nil || !strings.Contains(err.Error(), badger.ErrReplayNeeded.Error()) {
-		return store, err
+	if err == nil {
+		return store, nil
 	}
-	log.Info("The IPFS Badger store was not closed cleanly; it is opened writable, without compaction")
+	log.Info("The IPFS Badger store cannot be opened read-only; it is opened writable, without compaction", "err", err)
 	return badgerds.NewDatastore(dir, badgerReadOptions(false))
 }
 
@@ -359,19 +383,25 @@ func copyComplete(repoDir string, keys int64) bool {
 }
 
 // copyBadgerStore copies every key of the Badger store into new flatfs and LevelDB stores, mounted as the flatfs
-// profile mounts them, and puts them on disk. ok is false when it did not (logged; the repository stays on Badger).
-func copyBadgerStore(repoDir string, attempt int) (keys int64, ok bool) {
-	log.Info(conversionStartLine, "attempt", attempt)
+// profile mounts them, and puts them on disk. from is the copying marker: a fresh copy (no LastKey) starts from an
+// empty folder, a resumed one goes on after from.LastKey with the copy an earlier start put on disk. ok is false when
+// it did not finish (logged; the repository stays on Badger).
+func copyBadgerStore(repoDir string, from badgerConversionState) (keys int64, ok bool) {
+	resuming := len(from.LastKey) > 0
+	log.Info(conversionStartLine, "attempt", from.Attempts, "resumedAtKeys", from.Keys)
 	defer func() { log.Info(conversionEndLine, "converted", ok, "keys", keys) }()
-	removeCopy(repoDir)
+	if !resuming {
+		removeCopy(repoDir)
+	}
 	badgerDir := filepath.Join(repoDir, badgerDirName)
+	leveldbDir := filepath.Join(repoDir, leveldbDirName)
 	// Badger reads every table whole when it opens the store, and the estimate and the copy read them again: each
 	// time gigabytes of page cache, charged to the node's cgroup. They are dropped as the reading goes.
-	stopDropping := keepDroppingFileCache(5*time.Second, badgerDir, filepath.Join(repoDir, leveldbDirName))
+	stopDropping := keepDroppingFileCache(5*time.Second, badgerDir, leveldbDir)
 	defer stopDropping()
 	source, err := openBadgerToRead(badgerDir)
 	if err != nil {
-		abandonConversion(repoDir, attempt, errors.Wrap(err, "cannot open the Badger store"))
+		abandonConversion(repoDir, from.Attempts, errors.Wrap(err, "cannot open the Badger store"))
 		return 0, false
 	}
 	closeSource := func() {
@@ -381,62 +411,97 @@ func copyBadgerStore(repoDir string, attempt int) (keys int64, ok bool) {
 	}
 
 	ctx := context.Background()
-	need, err := copySize(ctx, source)
+	need, work, err := copySize(ctx, source)
 	if err != nil {
 		closeSource()
-		abandonConversion(repoDir, attempt, err)
+		abandonConversion(repoDir, from.Attempts, err)
 		return 0, false
 	}
 	free, err := freeDiskSpace(repoDir)
-	if err != nil || free < need+badgerConversionMargin {
+	if err != nil || free < need-from.Copied+badgerConversionMargin {
 		closeSource()
 		log.Warn("Not enough disk space to convert the IPFS repository from Badger; it stays on Badger",
-			"needMiB", (need+badgerConversionMargin)>>20, "freeMiB", free>>20, "err", err)
-		removeConversionState(repoDir)
+			"needMiB", (need-from.Copied+badgerConversionMargin)>>20, "freeMiB", free>>20, "err", err)
+		if !resuming {
+			removeConversionState(repoDir)
+		}
 		return 0, false
 	}
-	if err := writeConversionState(repoDir, badgerConversionState{Step: stepCopying, Attempts: attempt}); err != nil {
-		closeSource()
-		log.Warn("Cannot write the IPFS conversion marker; the repository stays on Badger", "err", err)
-		return 0, false
+	if !resuming {
+		if err := writeConversionState(repoDir, from); err != nil {
+			closeSource()
+			log.Warn("Cannot write the IPFS conversion marker; the repository stays on Badger", "err", err)
+			return 0, false
+		}
 	}
 
-	keys, err = copyKeys(ctx, source, repoDir, need)
+	keys, err = copyKeys(ctx, source, repoDir, need, work, from)
 	closeSource()
+	if err == errCopyStopped {
+		return keys, false
+	}
 	if err == nil {
-		// The copy must be on disk before the repository switches to it.
-		err = syncCopy(repoDir)
-		dropFileCache(filepath.Join(repoDir, flatfsDirName))
+		// The copy must be on disk before the repository switches to it: the blocks are, LevelDB wrote on its close.
+		if err = syncTree(leveldbDir); err != nil {
+			err = errors.Wrap(err, "cannot write the IPFS copy to disk")
+		}
 	}
 	if err != nil {
-		abandonConversion(repoDir, attempt, err)
+		abandonConversion(repoDir, from.Attempts, err)
 		return keys, false
 	}
 	return keys, true
 }
 
-// copySize estimates the disk space the copy takes: each block a file of whole clusters, the rest in LevelDB.
-func copySize(ctx context.Context, source ds.Datastore) (int64, error) {
-	results, err := source.Query(ctx, query.Query{KeysOnly: true, ReturnsSizes: true})
-	if err != nil {
-		return 0, err
-	}
-	defer results.Close()
-	var need int64
-	for result := range results.Next() {
-		if result.Error != nil {
-			return 0, errors.Wrap(result.Error, "cannot read the Badger store")
-		}
-		size := int64(result.Size) + int64(len(result.Key))
-		if strings.HasPrefix(result.Key, "/blocks/") {
-			size = (int64(result.Size)+diskCluster-1)/diskCluster*diskCluster + fileOverhead
-		}
-		need += size
-	}
-	return need, nil
+// keyWork: the share of the copy's time a key takes (keyWorkBytes).
+func keyWork(size int) int64 {
+	return int64(size) + keyWorkBytes
 }
 
-func copyKeys(ctx context.Context, source ds.Datastore, repoDir string, need int64) (keys int64, err error) {
+// keyDiskSize: the disk space a key takes in the copy, each block a file of whole clusters, the rest in LevelDB.
+func keyDiskSize(key string, size int) int64 {
+	if strings.HasPrefix(key, blocksPrefix) {
+		return (int64(size)+diskCluster-1)/diskCluster*diskCluster + fileOverhead
+	}
+	return int64(size) + int64(len(key))
+}
+
+// copySize estimates the disk space the whole copy takes (need) and its work (keyWork).
+func copySize(ctx context.Context, source ds.Datastore) (need, work int64, err error) {
+	results, err := source.Query(ctx, query.Query{KeysOnly: true, ReturnsSizes: true})
+	if err != nil {
+		return 0, 0, err
+	}
+	defer results.Close()
+	for result := range results.Next() {
+		if result.Error != nil {
+			return 0, 0, errors.Wrap(result.Error, "cannot read the Badger store")
+		}
+		need += keyDiskSize(result.Key, result.Size)
+		work += keyWork(result.Size)
+	}
+	return need, work, nil
+}
+
+// copyProgress: the log fields of a copy's progress, done of work (keyWork) with startDone done before this start
+// and elapsed since: percent (99 at most until the end), and minutesLeft at this start's pace once 30 s passed.
+func copyProgress(done, work, startDone int64, elapsed time.Duration) []any {
+	var fields []any
+	if work > 0 {
+		fields = append(fields, "percent", min(done*100/work, 99))
+	}
+	if elapsed > 30*time.Second && done > startDone {
+		rate := float64(done-startDone) / elapsed.Minutes()
+		fields = append(fields, "minutesLeft", int64(math.Ceil(float64(max(work-done, 0))/rate)))
+	}
+	return fields
+}
+
+// copyKeys copies the keys after from.LastKey, in Badger's order (the blocks first). At each checkpoint the copy is
+// put on disk and the marker records where it stands, for a start after a quit to go on from there: every
+// blockFlushBytes of blocks (their files leave the page cache with it), once past the blocks, at least every
+// checkpointEvery, and at the end.
+func copyKeys(ctx context.Context, source *badgerds.Datastore, repoDir string, need, work int64, from badgerConversionState) (keys int64, err error) {
 	target, err := openCopy(repoDir)
 	if err != nil {
 		return 0, err
@@ -446,85 +511,137 @@ func copyKeys(ctx context.Context, source ds.Datastore, repoDir string, need int
 			err = closeErr
 		}
 	}()
-	results, err := source.Query(ctx, query.Query{})
-	if err != nil {
-		return 0, err
-	}
-	defer results.Close()
 	batch, err := target.Batch(ctx)
 	if err != nil {
 		return 0, err
 	}
-	pending := 0
-	lastLog := time.Now()
-	blocksDone := false
-	blockBytes := 0
+	badgerDir := filepath.Join(repoDir, badgerDirName)
 	flatfsDir := filepath.Join(repoDir, flatfsDirName)
-	flushBlocks := func() error {
+	leveldbDir := filepath.Join(repoDir, leveldbDirName)
+	shard := flatfs.NextToLast(2).Func()
+	keys, copied, done, lastKey := from.Keys, from.Copied, from.Work, from.LastKey
+	// written: the block files since the last checkpoint, where they are synced one by one (not Linux).
+	var written []string
+	pending, blockBytes, checkpoints := 0, 0, 0
+	started, startDone := time.Now(), done
+	lastCheckpoint, lastLog := started, started
+
+	commit := func() error {
 		if err := batch.Commit(ctx); err != nil {
 			return err
 		}
-		if batch, err = target.Batch(ctx); err != nil {
-			return err
-		}
 		pending = 0
-		blockBytes = 0
-		if err := syncTree(flatfsDir); err != nil {
-			return errors.Wrap(err, "cannot put the copied blocks on disk")
+		batch, err = target.Batch(ctx)
+		return err
+	}
+	putOnDisk := func(since time.Time) error {
+		if err := syncCopied(flatfsDir, written, leveldbDir, since); err != nil {
+			return errors.Wrap(err, "cannot put the copied keys on disk")
 		}
-		dropFileCache(flatfsDir)
-		blockFlushes++
+		written = written[:0]
+		if blockBytes > 0 {
+			dropFileCache(flatfsDir)
+			blockBytes = 0
+		}
 		return nil
 	}
-	log.Info("Converting the IPFS repository from Badger", "estimatedMiB", need>>20)
-	for result := range results.Next() {
-		if result.Error != nil {
-			return keys, errors.Wrap(result.Error, "cannot read the Badger store")
+	checkpoint := func() error {
+		if err := commit(); err != nil {
+			return err
 		}
-		// The keys come in order, the blocks first. The block files just written stay in the page cache, charged to
-		// the node's cgroup: every blockFlushBytes and once past the blocks, they are put on disk and dropped.
-		if !blocksDone && keys > 0 && !strings.HasPrefix(result.Key, "/blocks/") {
+		since := lastCheckpoint
+		lastCheckpoint = time.Now()
+		if err := putOnDisk(since); err != nil {
+			return err
+		}
+		fingerprint, err := badgerFingerprint(badgerDir)
+		if err != nil {
+			return err
+		}
+		state := badgerConversionState{Step: stepCopying, Attempts: from.Attempts, Keys: keys, Copied: copied,
+			Work: done, LastKey: lastKey, Badger: fingerprint}
+		if err := writeConversionState(repoDir, state); err != nil {
+			return err
+		}
+		copyCheckpoints++
+		if checkpoints++; stopCopyAt > 0 && checkpoints >= stopCopyAt {
+			return errCopyStopped
+		}
+		return nil
+	}
+	progress := func() []any {
+		return append([]any{"keys", keys}, copyProgress(done, work, startDone, time.Since(started))...)
+	}
+
+	txn := source.DB.NewTransaction(false)
+	defer txn.Discard()
+	it := txn.NewIterator(badger.IteratorOptions{})
+	defer it.Close()
+	it.Seek(lastKey)
+	if len(lastKey) > 0 && it.Valid() && bytes.Equal(it.Item().Key(), lastKey) {
+		it.Next()
+	}
+	blocksDone := len(lastKey) > 0 && !bytes.HasPrefix(lastKey, []byte(blocksPrefix))
+	log.Info("Converting the IPFS repository from Badger", append([]any{"estimatedMiB", need >> 20}, progress()...)...)
+	for ; it.Valid(); it.Next() {
+		item := it.Item()
+		key := item.KeyCopy(nil)
+		isBlock := bytes.HasPrefix(key, []byte(blocksPrefix))
+		if !blocksDone && !isBlock && keys > 0 {
 			blocksDone = true
-			if err := flushBlocks(); err != nil {
+			if err := checkpoint(); err != nil {
 				return keys, err
 			}
 		}
-		if !blocksDone {
-			if blockBytes += len(result.Value); blockBytes >= blockFlushBytes {
-				if err := flushBlocks(); err != nil {
-					return keys, err
-				}
-			}
+		value, err := item.ValueCopy(nil)
+		if err != nil {
+			return keys, errors.Wrap(err, "cannot read the Badger store")
 		}
-		if err := batch.Put(ctx, ds.RawKey(result.Key), result.Value); err != nil {
-			return keys, errors.Wrapf(err, "cannot copy %s", result.Key)
+		if err := batch.Put(ctx, ds.RawKey(string(key)), value); err != nil {
+			return keys, errors.Wrapf(err, "cannot copy %s", key)
 		}
 		keys++
-		if pending++; pending < badgerConversionBatch {
+		copied += keyDiskSize(string(key), len(value))
+		done += keyWork(len(value))
+		lastKey = key
+		if isBlock {
+			blockBytes += len(value)
+			if !syncsFilesystem {
+				name := strings.TrimPrefix(string(key), blocksPrefix)
+				written = append(written, filepath.Join(flatfsDir, shard(name), name+flatfsExtension))
+			}
+		}
+		pending++
+		switch {
+		case isBlock && blockBytes >= blockFlushBytes, time.Since(lastCheckpoint) >= checkpointEvery:
+			err = checkpoint()
+		case pending >= badgerConversionBatch:
+			err = commit()
+		}
+		if err != nil {
+			return keys, err
+		}
+		if pending > 0 {
 			continue
 		}
-		if err := batch.Commit(ctx); err != nil {
-			return keys, err
-		}
-		if batch, err = target.Batch(ctx); err != nil {
-			return keys, err
-		}
-		pending = 0
 		// Stop before the disk fills: the node needs room for its chain.
 		if free, err := freeDiskSpace(repoDir); err != nil || free < badgerConversionMargin {
 			return keys, errors.Errorf("the disk is nearly full (free %d MiB)", free>>20)
 		}
 		if time.Since(lastLog) > 10*time.Second {
-			log.Info("Converting the IPFS repository from Badger", "keys", keys)
+			log.Info("Converting the IPFS repository from Badger", progress()...)
 			lastLog = time.Now()
 		}
 	}
-	if err := batch.Commit(ctx); err != nil {
+	if err := commit(); err != nil {
+		return keys, err
+	}
+	if err := putOnDisk(lastCheckpoint); err != nil {
 		return keys, err
 	}
 	// Every key read must be readable back.
 	count, err := countKeys(ctx, target)
-	dropFileCache(filepath.Join(repoDir, leveldbDirName))
+	dropFileCache(leveldbDir)
 	if err != nil {
 		return keys, err
 	}
@@ -548,16 +665,6 @@ func countKeys(ctx context.Context, store ds.Datastore) (int64, error) {
 		n++
 	}
 	return n, nil
-}
-
-// syncCopy puts the copy's files on disk (flatfs writes them without syncing).
-func syncCopy(repoDir string) error {
-	for _, dir := range []string{flatfsDirName, leveldbDirName} {
-		if err := syncTree(filepath.Join(repoDir, dir)); err != nil {
-			return errors.Wrap(err, "cannot write the IPFS copy to disk")
-		}
-	}
-	return nil
 }
 
 // The spec a new repository gets with the flatfs profile, as kubo writes it in datastore_spec.
