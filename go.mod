@@ -42,9 +42,12 @@ require (
 
 require (
 	github.com/Microsoft/go-winio v0.6.2
+	github.com/dgraph-io/badger v1.6.2
 	github.com/idena-network/idena-wasm-binding v0.0.0-20260703133323-47b198d9b194
 	github.com/ipfs/boxo v0.41.0
 	github.com/ipfs/go-datastore v0.9.1
+	github.com/ipfs/go-ds-badger v0.3.4
+	github.com/ipfs/go-ds-flatfs v0.6.0
 	github.com/ipfs/go-ds-leveldb v0.5.2
 	github.com/libp2p/go-libp2p v0.48.0
 )
@@ -85,7 +88,6 @@ require (
 	github.com/cskr/pubsub v1.0.2 // indirect
 	github.com/davidlazar/go-crypto v0.0.0-20200604182044-b73af7476f6c // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1 // indirect
-	github.com/dgraph-io/badger v1.6.2 // indirect
 	github.com/dgraph-io/badger/v2 v2.2007.2 // indirect
 	github.com/dgraph-io/ristretto v0.0.3-0.20200630154024-f66de99634de // indirect
 	github.com/dgryski/go-farm v0.0.0-20240924180020-3414d57e47da // indirect
@@ -122,8 +124,6 @@ require (
 	github.com/ipfs/go-bitfield v1.1.0 // indirect
 	github.com/ipfs/go-block-format v0.2.3 // indirect
 	github.com/ipfs/go-cidutil v0.1.1 // indirect
-	github.com/ipfs/go-ds-badger v0.3.4 // indirect
-	github.com/ipfs/go-ds-flatfs v0.6.0 // indirect
 	github.com/ipfs/go-ds-measure v0.2.2 // indirect
 	github.com/ipfs/go-ds-pebble v0.5.11 // indirect
 	github.com/ipfs/go-dsqueue v0.2.0 // indirect

@@ -21,6 +21,10 @@ import (
 var proxy Proxy
 
 func init() {
+	// The child process of the kill tests (badger_convert_test.go) runs no IPFS node: the parent's holds the port.
+	if os.Getenv(copyKillHelperEnv) != "" {
+		return
+	}
 	var err error
 	dataDir, err := os.MkdirTemp("", "idena-ipfs-test-*")
 	if err != nil {
@@ -132,24 +136,6 @@ func TestConfigureIpfsDisablesProvidingWhenReproviderIntervalIsZero(t *testing.T
 	require.Equal(t, ipfsConf.False, configured.Provide.Enabled)
 	require.Zero(t, configured.Provide.DHT.Interval.WithDefault(ipfsConf.DefaultProvideDHTInterval))
 	require.NoError(t, ipfsConf.ValidateProvideConfig(&configured.Provide))
-}
-
-func TestConfigureIpfsPreservesExistingBadgerRepo(t *testing.T) {
-	dataDir := t.TempDir()
-	legacyConfig, err := ipfsConf.Init(io.Discard, 2048)
-	require.NoError(t, err)
-	require.NoError(t, ipfsConf.Profiles["badgerds"].Transform(legacyConfig))
-	require.NoError(t, fsrepo.Init(dataDir, legacyConfig))
-
-	configured, err := configureIpfs(testIpfsConfig(dataDir), eventbus.New())
-	require.NoError(t, err)
-	require.Equal(t, "badgerds", configured.Datastore.Spec["type"])
-	require.Equal(t, ipfsConf.False, configured.AutoConf.Enabled)
-	require.Equal(t, ipfsConf.False, configured.AutoTLS.Enabled)
-
-	locked, err := fsrepo.LockedByOtherProcess(dataDir)
-	require.NoError(t, err)
-	require.False(t, locked)
 }
 
 func TestConfigureIpfsPreservesMalformedExistingConfig(t *testing.T) {
