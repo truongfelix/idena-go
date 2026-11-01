@@ -483,3 +483,43 @@ func TestHistoryCompleteAtEpochZero(t *testing.T) {
 	default:
 	}
 }
+
+// A node that fast-synced past the last ceremony block has no summary for it (owner's node, 2026-11-01: epoch 234
+// without score in History): the score it added is still placed when the address stayed validated through that
+// ceremony and sent its short answers, and the epochs with summaries before it follow.
+func TestLabelScoresPastAFastSync(t *testing.T) {
+	yes, no := true, false
+	summaries := map[uint16]*validationsummary.Summary{
+		233: {Epoch: 233, Participated: true},
+		232: {Epoch: 232, Participated: true},
+	}
+	answered := map[uint16]*Transactions{234: {Sent: 3, ShortAnswers: true, LongAnswers: true}}
+	scores := []byte{0x44, 0x45, 0x66}
+	epochsOf := func(result []*Score) []*uint16 {
+		var epochs []*uint16
+		for _, s := range result {
+			epochs = append(epochs, s.Epoch)
+		}
+		return epochs
+	}
+	e := func(v uint16) *uint16 { return &v }
+
+	result := labelScores(scores, 235, summaries, map[uint16]*bool{234: &yes}, answered)
+	require.Equal(t, []*uint16{e(232), e(233), e(234)}, epochsOf(result))
+	points, flips := common.DecodeScore(0x66)
+	require.Equal(t, points, result[2].ShortPoints)
+	require.Equal(t, flips, result[2].ShortFlips)
+
+	// Not enough to place it: no identity change known, not validated, or no short answers sent.
+	for name, c := range map[string]struct {
+		validated map[uint16]*bool
+		txs       map[uint16]*Transactions
+	}{
+		"unknown":       {map[uint16]*bool{}, answered},
+		"not validated": {map[uint16]*bool{234: &no}, answered},
+		"no answers":    {map[uint16]*bool{234: &yes}, map[uint16]*Transactions{234: {Sent: 1}}},
+	} {
+		result := labelScores(scores, 235, summaries, c.validated, c.txs)
+		require.Equal(t, []*uint16{nil, nil, nil}, epochsOf(result), name)
+	}
+}
