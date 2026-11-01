@@ -327,7 +327,9 @@ func copyBadgerStore(repoDir string, attempt int) (keys int64, ok bool) {
 	}
 
 	ctx := context.Background()
-	need, err := copySize(ctx, source)
+	need, err := copySize(ctx, source, badgerDir)
+	// The estimate read every table once; the copy reads them again, in order, a little at a time.
+	dropFileCache(badgerDir)
 	if err != nil {
 		closeSource()
 		abandonConversion(repoDir, attempt, err)
@@ -347,7 +349,7 @@ func copyBadgerStore(repoDir string, attempt int) (keys int64, ok bool) {
 		return 0, false
 	}
 
-	keys, err = copyKeys(ctx, source, repoDir, need)
+	keys, err = copyKeys(ctx, source, badgerDir, repoDir, need)
 	closeSource()
 	if err == nil {
 		// The copy must be on disk before the repository switches to it.
@@ -361,16 +363,21 @@ func copyBadgerStore(repoDir string, attempt int) (keys int64, ok bool) {
 }
 
 // copySize estimates the disk space the copy takes: each block a file of whole clusters, the rest in LevelDB.
-func copySize(ctx context.Context, source ds.Datastore) (int64, error) {
+func copySize(ctx context.Context, source ds.Datastore, badgerDir string) (int64, error) {
 	results, err := source.Query(ctx, query.Query{KeysOnly: true, ReturnsSizes: true})
 	if err != nil {
 		return 0, err
 	}
 	defer results.Close()
 	var need int64
+	lastDrop := time.Now()
 	for result := range results.Next() {
 		if result.Error != nil {
 			return 0, errors.Wrap(result.Error, "cannot read the Badger store")
+		}
+		if time.Since(lastDrop) > 10*time.Second {
+			dropFileCache(badgerDir)
+			lastDrop = time.Now()
 		}
 		size := int64(result.Size) + int64(len(result.Key))
 		if strings.HasPrefix(result.Key, "/blocks/") {
@@ -381,7 +388,7 @@ func copySize(ctx context.Context, source ds.Datastore) (int64, error) {
 	return need, nil
 }
 
-func copyKeys(ctx context.Context, source ds.Datastore, repoDir string, need int64) (keys int64, err error) {
+func copyKeys(ctx context.Context, source ds.Datastore, badgerDir, repoDir string, need int64) (keys int64, err error) {
 	target, err := openCopy(repoDir)
 	if err != nil {
 		return 0, err
@@ -428,6 +435,8 @@ func copyKeys(ctx context.Context, source ds.Datastore, repoDir string, need int
 		if time.Since(lastLog) > 10*time.Second {
 			log.Info("Converting the IPFS repository from Badger", "keys", keys)
 			lastLog = time.Now()
+			dropFileCache(badgerDir)
+			dropFileCache(filepath.Join(repoDir, leveldbDirName))
 		}
 	}
 	if err := batch.Commit(ctx); err != nil {
@@ -435,6 +444,7 @@ func copyKeys(ctx context.Context, source ds.Datastore, repoDir string, need int
 	}
 	// Every key read must be readable back.
 	count, err := countKeys(ctx, target)
+	dropFileCache(filepath.Join(repoDir, leveldbDirName))
 	if err != nil {
 		return keys, err
 	}

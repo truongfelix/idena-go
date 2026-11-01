@@ -21,3 +21,6 @@ func diskFreeBytes(dir string) (int64, error) {
 func syncTree(dir string) error {
 	return syncEachFile(dir)
 }
+
+// dropFileCache: no page cache advice here (Linux only).
+func dropFileCache(string) {}
