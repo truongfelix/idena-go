@@ -1326,7 +1326,7 @@ func (chain *Blockchain) rewardFinalCommittee(appState *appstate.AppState, block
 		balanceDest := addr
 		if delegator := appState.ValidatorsCache.Delegator(addr); !delegator.IsEmpty() {
 			penaltySource = delegator
-			balanceDest = delegator
+			balanceDest = chain.config.Consensus.RewardDest(addr, &delegator)
 		}
 		// calculate penalty
 		balanceAdd, stakeAdd, penaltySub, penaltySecondsSub := calculatePenalty(balanceReward, stakeReward, appState.State.GetPenalty(penaltySource), appState.State.GetPenaltySeconds(penaltySource), appState.State.GetPenaltyTimestamp(penaltySource), block.Header.Time())

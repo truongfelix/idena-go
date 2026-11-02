@@ -193,6 +193,16 @@ func (cfg *ConsensusConf) IsFrozenAddress(addr common.Address) bool {
 	return ok
 }
 
+// RewardDest returns where a reward addr earns is paid: its delegatee (pool), or addr itself when it has none or, under
+// v13, when the delegatee is frozen: the identity is paid as if not delegated, whether or not its undelegation has
+// applied yet (a delegator that is not validated is not in the validators cache, so it is undelegated only later).
+func (cfg *ConsensusConf) RewardDest(addr common.Address, delegatee *common.Address) common.Address {
+	if delegatee == nil || cfg.IsFrozenAddress(*delegatee) {
+		return addr
+	}
+	return *delegatee
+}
+
 func GetDefaultConsensusConfig() *ConsensusConf {
 	return &v9
 }

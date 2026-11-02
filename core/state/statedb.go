@@ -410,6 +410,9 @@ func (s *StateDB) AddReplenishedStake(address common.Address, intStake *big.Int)
 }
 
 func (s *StateDB) AddLockedStake(address common.Address, amount *big.Int) {
+	if isFrozen(address) {
+		return
+	}
 	s.GetOrNewIdentityObject(address).AddLockedStake(amount)
 }
 

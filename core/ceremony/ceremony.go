@@ -994,10 +994,7 @@ func applyOnState(cfg *config.ConsensusConf, appState *appstate.AppState, curren
 	if value.state == state.Verified && value.prevState == state.Newbie {
 		earnedStake := new(big.Int).Sub(appState.State.GetStakeBalance(addr), appState.State.GetReplenishedStakeBalance(addr))
 		addToBalance := math.ToInt(decimal.NewFromBigInt(earnedStake, 0).Mul(decimal.NewFromFloat(common.StakeToBalanceCoef)))
-		addTo := addr
-		if value.delegatee != nil {
-			addTo = *value.delegatee
-		}
+		addTo := cfg.RewardDest(addr, value.delegatee)
 		collector.BeginVerifiedStakeTransferBalanceUpdate(statsCollector, addr, addTo, appState)
 		appState.State.AddBalance(addTo, addToBalance)
 		appState.State.SubStake(addr, addToBalance)
