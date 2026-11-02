@@ -2,6 +2,7 @@ package identitylist
 
 import (
 	"crypto/sha256"
+	"fmt"
 	"math/big"
 	"math/rand"
 	"testing"
@@ -218,4 +219,27 @@ func TestDecodeRefusesDamagedBlocks(t *testing.T) {
 	bad[0] = 2
 	_, err = DecodeIndex(bad)
 	require.Error(t, err)
+}
+
+// The cost a list block adds to every node: the walk over the state's identities, the encoding and the hashes.
+func BenchmarkFromState(b *testing.B) {
+	for _, n := range []int{1_000, 10_000, 100_000} {
+		s, err := state.NewLazy(db.NewMemDB())
+		require.NoError(b, err)
+		for i := 0; i < n; i++ {
+			a := common.Address{byte(i >> 16), byte(i >> 8), byte(i), 1}
+			s.SetState(a, state.Human)
+			s.AddStake(a, big.NewInt(int64(i)))
+			s.AddNewScore(a, common.EncodeScore(5, 6))
+		}
+		s.Commit(false)
+		s.Clear()
+		b.Run(fmt.Sprint(n), func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				if _, err := FromState(1, s); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
 }

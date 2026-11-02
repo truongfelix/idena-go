@@ -34,13 +34,14 @@ type IdentityListItem struct {
 }
 
 // IdentityList returns the identity list of the block at height, or the last one this node pinned when height is
-// left out or 0. Each block read from IPFS is checked against the header's CID.
-func (api *DnaApi) IdentityList(height *uint64) (*IdentityList, error) {
+// left out or 0. With page, only that page's identities (pages of identitylist.PageSize, from 0): a large list in
+// one answer can outlast the RPC's write timeout. Each block read from IPFS is checked against the header's CID.
+func (api *DnaApi) IdentityList(height *uint64, page *int) (*IdentityList, error) {
 	var h uint64
 	if height != nil {
 		h = *height
 	}
-	indexCid, index, rows, err := api.bc.IdentityList(h)
+	indexCid, index, err := api.bc.IdentityListIndex(h)
 	if err != nil {
 		return nil, err
 	}
@@ -48,9 +49,23 @@ func (api *DnaApi) IdentityList(height *uint64) (*IdentityList, error) {
 	for _, c := range index.PageCids {
 		res.PageCids = append(res.PageCids, c.String())
 	}
-	res.Identities = make([]IdentityListItem, 0, len(rows))
-	for _, r := range rows {
-		res.Identities = append(res.Identities, convertIdentityListRow(r))
+	pages := make([]int, 0, len(index.PageCids))
+	if page != nil {
+		pages = append(pages, *page)
+	} else {
+		for i := range index.PageCids {
+			pages = append(pages, i)
+		}
+	}
+	res.Identities = []IdentityListItem{}
+	for _, i := range pages {
+		rows, err := api.bc.IdentityListPage(index, i)
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range rows {
+			res.Identities = append(res.Identities, convertIdentityListRow(r))
+		}
 	}
 	return res, nil
 }

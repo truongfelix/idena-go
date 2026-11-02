@@ -39,40 +39,53 @@ func NewPins(db dbm.DB, proxy ipfs.Proxy, keep int) *Pins {
 }
 
 // Add stores and pins a list; ceremony is set for the list of the block that applied a ceremony's results.
+//
+// The new set of lists is saved before anything is pinned or unpinned: a crash after the save leaves at worst a
+// listed list whose blocks are not pinned yet (read from peers, unpinned harmlessly later) or dropped blocks still
+// pinned, never a pinned block no saved entry names, except the dropped ones of that one call.
 func (p *Pins) Add(list *List, ceremony bool) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	entry := pinned{height: list.Height, ceremony: ceremony, cids: []cid.Cid{list.IndexCid}}
-	blocks := append([][]byte{list.Index}, list.Pages...)
 	entry.cids = append(entry.cids, list.PageCids...)
-	for i, data := range blocks {
-		c, err := p.ipfs.Add(data, true)
-		if err != nil {
-			return errors.Wrapf(err, "identity list of block %v", list.Height)
-		}
-		if !c.Equals(entry.cids[i]) {
-			return errors.Errorf("identity list of block %v: IPFS stored %v, expected %v", list.Height, c, entry.cids[i])
-		}
-	}
+	blocks := append([][]byte{list.Index}, list.Pages...)
+
 	entries, err := p.load()
 	if err != nil {
 		return err
 	}
 	// A list at a height already listed replaces it and every later one: the chain switched to another branch.
-	kept := entries[:0:0]
+	before := entries[:0:0]
 	var dropped []pinned
 	for _, e := range entries {
 		if e.height >= entry.height {
 			dropped = append(dropped, e)
 		} else {
-			kept = append(kept, e)
+			before = append(before, e)
 		}
 	}
-	kept = append(kept, entry)
-	kept, old := p.choose(kept)
+	kept, old := p.choose(append(before, entry))
 	dropped = append(dropped, old...)
+	if err := p.save(kept); err != nil {
+		return err
+	}
+	for i, data := range blocks {
+		c, err := p.ipfs.Add(data, true)
+		if err == nil && !c.Equals(entry.cids[i]) {
+			err = errors.Errorf("IPFS stored %v, expected %v", c, entry.cids[i])
+		}
+		if err != nil {
+			// Give up this list and keep the lists as they were: unpin what this call pinned, unless one of them
+			// holds it.
+			p.unpin([]pinned{{cids: entry.cids[:i]}}, entries)
+			if saveErr := p.save(entries); saveErr != nil {
+				return saveErr
+			}
+			return errors.Wrapf(err, "identity list of block %v", list.Height)
+		}
+	}
 	p.unpin(dropped, kept)
-	return p.save(kept)
+	return nil
 }
 
 // choose splits the entries, sorted by height, into the kept and the dropped ones.
@@ -124,6 +137,27 @@ func (p *Pins) unpin(dropped, kept []pinned) {
 			_ = p.ipfs.Unpin(c.Bytes())
 		}
 	}
+}
+
+// Pinned is a list this node keeps pinned.
+type Pinned struct {
+	Height   uint64
+	IndexCid cid.Cid
+}
+
+// Lists lists the pinned lists, lowest height first.
+func (p *Pins) Lists() ([]Pinned, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	entries, err := p.load()
+	if err != nil {
+		return nil, err
+	}
+	res := make([]Pinned, 0, len(entries))
+	for _, e := range entries {
+		res = append(res, Pinned{Height: e.height, IndexCid: e.cids[0]})
+	}
+	return res, nil
 }
 
 // Heights lists the heights of the pinned lists, lowest first.

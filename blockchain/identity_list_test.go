@@ -211,3 +211,20 @@ func decodeList(t *testing.T, l *identitylist.List) (*identitylist.Index, []iden
 	}
 	return index, rows
 }
+
+// After a rollback below the last list, the last list on the chain is the one before it.
+func TestLastIdentityListAfterRollback(t *testing.T) {
+	chain, _ := identityListTestChain(t, true)
+	var listHeights []uint64
+	for len(listHeights) < 2 {
+		chain.GenerateBlocks(1, 0)
+		if len(chain.Head.IdentityListCid()) > 0 {
+			listHeights = append(listHeights, chain.Head.Height())
+		}
+	}
+	_, err := chain.ResetTo(listHeights[1] - 1)
+	require.NoError(t, err)
+	_, index, _, err := chain.IdentityList(0)
+	require.NoError(t, err)
+	require.Equal(t, listHeights[0], index.Height)
+}

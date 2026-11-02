@@ -1,6 +1,7 @@
 package identitylist
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/idena-network/idena-go/ipfs"
@@ -139,4 +140,41 @@ func TestPinsSurviveARestart(t *testing.T) {
 	heights, _ := again.Heights()
 	require.Equal(t, []uint64{20, 30}, heights)
 	require.False(t, tracker.holds(listAt(t, 10)))
+}
+
+type failingAdds struct {
+	*pinTracker
+	left int
+}
+
+func (f *failingAdds) Add(data []byte, pin bool) (cid.Cid, error) {
+	if f.left == 0 {
+		return cid.Cid{}, errors.New("ipfs is down")
+	}
+	f.left--
+	return f.pinTracker.Add(data, pin)
+}
+
+// A list IPFS stores only in part leaves the lists as they were, and nothing of it pinned.
+func TestPinsFailedAddLeavesNothingPinned(t *testing.T) {
+	tracker := newPinTracker()
+	adds := &failingAdds{pinTracker: tracker, left: -1}
+	pins := NewPins(db.NewMemDB(), adds, 1)
+	first := listAt(t, 10)
+	require.NoError(t, pins.Add(first, false))
+
+	rows := make([]Row, 0, PageSize+5)
+	for i := 0; i < PageSize+5; i++ {
+		rows = append(rows, fullRow(1000+i))
+	}
+	big := listAt(t, 20, rows...)
+	require.Len(t, big.Pages, 2)
+	adds.left = 2 // the index and the first page, then a failure
+	require.Error(t, pins.Add(big, false))
+
+	heights, err := pins.Heights()
+	require.NoError(t, err)
+	require.Equal(t, []uint64{10}, heights)
+	require.True(t, tracker.holds(first))
+	require.Len(t, tracker.pinned, 1+len(first.PageCids))
 }
