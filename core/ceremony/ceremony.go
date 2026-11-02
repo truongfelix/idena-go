@@ -1117,10 +1117,10 @@ func (vc *ValidationCeremony) ApplyNewEpoch(height uint64, appState *appstate.Ap
 
 		vc.logInfoWithInteraction("Approved candidates", "shardId", shardId, "cnt", len(approvedCandidates))
 
-		var authorsFlipQuality map[common.Address]authorFlipQuality
-		if vc.config.Consensus.EnableUpgrade13 {
-			authorsFlipQuality = flipQualityByAuthor(flipQualification, flipsByAuthor)
-		}
+		// Computed under every version (it writes nothing): the result is kept in epochApplyingCache by height, and
+		// applyOnState alone decides by the version in force when it is applied, so a value cached before an upgrade
+		// that a fork switch then activates is still whole.
+		authorsFlipQuality := flipQualityByAuthor(flipQualification, flipsByAuthor)
 
 		notApprovedFlips := vc.getNotApprovedFlips(approvedCandidatesSet, shardId)
 

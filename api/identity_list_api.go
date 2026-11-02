@@ -32,7 +32,7 @@ type IdentityListItem struct {
 	ShortFlipPoints  float32         `json:"shortFlipPoints"`
 	Scores           hexutil.Bytes   `json:"scores"`
 	// FlipQualityFlips and FlipQualityPoints are the v13 window summed: mining rewards scale by points / flips.
-	FlipQualityFlips  uint16  `json:"flipQualityFlips"`
+	FlipQualityFlips  uint32  `json:"flipQualityFlips"`
 	FlipQualityPoints float32 `json:"flipQualityPoints"`
 }
 
@@ -88,7 +88,7 @@ func convertIdentityListRow(r identitylist.Row) IdentityListItem {
 		QualifiedFlips:    r.QualifiedFlips,
 		ShortFlipPoints:   float32(r.ShortFlipPoints) / 2,
 		Scores:            r.Scores,
-		FlipQualityFlips:  r.FlipQualityFlips,
+		FlipQualityFlips:  uint32(r.FlipQualityFlips),
 		FlipQualityPoints: float32(r.FlipQualityPoints) / 2,
 	}
 }
