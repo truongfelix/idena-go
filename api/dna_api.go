@@ -414,28 +414,31 @@ func (api *DnaApi) Identity(address *common.Address) Identity {
 	return convertIdentity(appState.State.Epoch(), *address, appState.State.GetIdentity(*address), flipKeyWordPairs, appState)
 }
 
-func convertIdentity(currentEpoch uint16, address common.Address, data state.Identity, flipKeyWordPairs []int, appState *appstate.AppState) Identity {
-	var s string
-	switch data.State {
+func identityStateName(identityState state.IdentityState) string {
+	switch identityState {
 	case state.Invite:
-		s = "Invite"
+		return "Invite"
 	case state.Candidate:
-		s = "Candidate"
+		return "Candidate"
 	case state.Newbie:
-		s = "Newbie"
+		return "Newbie"
 	case state.Verified:
-		s = "Verified"
+		return "Verified"
 	case state.Suspended:
-		s = "Suspended"
+		return "Suspended"
 	case state.Zombie:
-		s = "Zombie"
+		return "Zombie"
 	case state.Killed:
-		s = "Killed"
+		return "Killed"
 	case state.Human:
-		s = "Human"
+		return "Human"
 	default:
-		s = "Undefined"
+		return "Undefined"
 	}
+}
+
+func convertIdentity(currentEpoch uint16, address common.Address, data state.Identity, flipKeyWordPairs []int, appState *appstate.AppState) Identity {
+	s := identityStateName(data.State)
 
 	var flags []string
 	if data.LastValidationStatus.HasFlag(state.AllFlipsNotQualified) {
