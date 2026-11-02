@@ -29,6 +29,15 @@ binaries and refuses to publish them unless all five digests match this
 committed evidence. Release builds disable VCS stamping so metadata-only commits
 after `runtimeCodeCommit` do not invalidate independently reproduced binaries.
 
+The owner can waive a gate for one release, in place of its evidence: its
+`gateResults` entry then holds `status` `waived`, a `reason`, `approvedBy`, a
+`date` (`YYYY-MM-DD`), `waivedCommit` (the lock's `runtimeCodeCommit`) and the
+one `releaseTag` it covers. The release check refuses a waiver for any other
+commit or tag, and never accepts one for `stack-lock-validation`, `secret-scan`
+or `dependency-policy`. It prints each waived gate with its reason; with
+`independent-rebuild-digest-match` waived, the release job still checks every
+binary against its checksum file. Name the waived gates in the release notes.
+
 After independently reviewing all evidence, change the top-level status to
 `approved`. The release workflow rejects candidate locks, incomplete evidence,
 tags outside the default branch, missing artifacts, and checksum mismatches.

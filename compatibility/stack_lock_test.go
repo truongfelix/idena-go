@@ -34,7 +34,15 @@ type gateResult struct {
 	Status   string `json:"status"`
 	Evidence string `json:"evidence"`
 	SHA256   string `json:"sha256"`
+	// A waived gate (scripts/check_release_compatibility.py checks the release tag).
+	Reason       string `json:"reason"`
+	ApprovedBy   string `json:"approvedBy"`
+	WaivedCommit string `json:"waivedCommit"`
+	ReleaseTag   string `json:"releaseTag"`
 }
+
+// The gates that take minutes on the release commit: never waived.
+var unwaivableGates = map[string]bool{"stack-lock-validation": true, "secret-scan": true, "dependency-policy": true}
 
 type stackLock struct {
 	Schema          int    `json:"schema"`
@@ -70,6 +78,13 @@ func TestReleaseApprovalRequiresEvidenceForEveryGate(t *testing.T) {
 			continue
 		}
 		result, exists := lock.GateResults[gate]
+		if exists && result.Status == "waived" {
+			if unwaivableGates[gate] || strings.TrimSpace(result.Reason) == "" || strings.TrimSpace(result.ApprovedBy) == "" ||
+				result.WaivedCommit != wantRuntimeCommit || result.ReleaseTag == "" {
+				t.Fatalf("approved lock has an invalid waiver for %q", gate)
+			}
+			continue
+		}
 		if !exists || result.Status != "passed" {
 			t.Fatalf("approved lock has no passing result for %q", gate)
 		}

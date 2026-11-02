@@ -425,6 +425,170 @@ func TestReleaseArtifactVerifierBindsPublishedBinariesToEvidence(t *testing.T) {
 	}
 }
 
+// A waiver lets the owner release without one gate's evidence: it names the reason, who approved it, the runtime
+// commit and the one release tag it covers, and the quick gates can never be waived.
+func TestReleaseCompatibilityValidatorAcceptsOnlyBoundWaivers(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("release validation runs on Linux")
+	}
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 is not installed")
+	}
+
+	const (
+		gate         = "legacy-state-replay-differential"
+		testedCommit = "0123456789abcdef0123456789abcdef01234567"
+		releaseTag   = "v1.2.0"
+	)
+	root := t.TempDir()
+	requireTestNoError(t, os.MkdirAll(filepath.Join(root, "compatibility", "evidence"), 0700))
+	waiver := func() map[string]any {
+		return map[string]any{
+			"status":       "waived",
+			"reason":       "consensus v13 freeze released before its voting window",
+			"approvedBy":   "owner",
+			"date":         "2026-11-02",
+			"waivedCommit": testedCommit,
+			"releaseTag":   releaseTag,
+		}
+	}
+	lockFor := func(gateName string, result map[string]any) map[string]any {
+		return map[string]any{
+			"status":        "approved",
+			"requiredGates": []string{gateName},
+			"gateResults":   map[string]any{gateName: result},
+			"components": []map[string]any{{
+				"name":              "idena-go",
+				"commit":            testedCommit,
+				"runtimeCodeCommit": testedCommit,
+			}},
+			"consumerPins": map[string]any{
+				"idena-desktop": map[string]any{"idena-go": testedCommit},
+			},
+		}
+	}
+	lockPath := filepath.Join(root, "compatibility", "stack-lock.json")
+	check := func(lock map[string]any, args ...string) (string, error) {
+		writeTestJSON(t, lockPath, lock)
+		output, err := exec.Command(python, append([]string{"check_release_compatibility.py", lockPath, root}, args...)...).CombinedOutput()
+		return string(output), err
+	}
+
+	output, err := check(lockFor(gate, waiver()), releaseTag)
+	if err != nil || !strings.Contains(output, "waived by the owner: "+gate) || !strings.Contains(output, "evidence passed") {
+		t.Fatalf("a bound waiver was rejected: err=%v output=%s", err, output)
+	}
+
+	refused := []struct {
+		name   string
+		gate   string
+		change func(map[string]any)
+		args   []string
+		want   string
+	}{
+		{"no tag given", gate, func(map[string]any) {}, nil, "run the check with the tag"},
+		{"another tag", gate, func(map[string]any) {}, []string{"v1.2.1"}, "not release tag 'v1.2.1'"},
+		{"another commit", gate, func(r map[string]any) { r["waivedCommit"] = strings.Repeat("f", 40) }, []string{releaseTag}, "different node commit"},
+		{"no reason", gate, func(r map[string]any) { r["reason"] = " " }, []string{releaseTag}, "non-empty reason"},
+		{"no approver", gate, func(r map[string]any) { delete(r, "approvedBy") }, []string{releaseTag}, "non-empty approvedBy"},
+		{"bad date", gate, func(r map[string]any) { r["date"] = "11/02/2026" }, []string{releaseTag}, "needs a date"},
+		{"unknown field", gate, func(r map[string]any) { r["evidence"] = "compatibility/evidence/x.json" }, []string{releaseTag}, "unknown fields: evidence"},
+		{"stack lock gate", "stack-lock-validation", func(map[string]any) {}, []string{releaseTag}, "cannot be waived"},
+		{"secret scan gate", "secret-scan", func(map[string]any) {}, []string{releaseTag}, "cannot be waived"},
+		{"dependency gate", "dependency-policy", func(map[string]any) {}, []string{releaseTag}, "cannot be waived"},
+	}
+	for _, tc := range refused {
+		result := waiver()
+		tc.change(result)
+		output, err := check(lockFor(tc.gate, result), tc.args...)
+		if err == nil || !strings.Contains(output, tc.want) {
+			t.Fatalf("%s: waiver was not rejected with %q: err=%v output=%s", tc.name, tc.want, err, output)
+		}
+	}
+}
+
+// With the independent rebuild waived, the release job still refuses a missing, extra or mismatched release file.
+func TestReleaseArtifactVerifierWithWaivedRebuildChecksChecksums(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("release validation runs on Linux")
+	}
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 is not installed")
+	}
+
+	const (
+		gate         = "independent-rebuild-digest-match"
+		testedCommit = "0123456789abcdef0123456789abcdef01234567"
+		releaseTag   = "v1.2.0"
+	)
+	root := t.TempDir()
+	buildsDir := filepath.Join(root, "builds")
+	requireTestNoError(t, os.MkdirAll(filepath.Join(root, "compatibility", "evidence"), 0700))
+	requireTestNoError(t, os.MkdirAll(buildsDir, 0700))
+	assetNames := []string{
+		"idena-node-linux-1.2.0",
+		"idena-node-linux-aarch64-1.2.0",
+		"idena-node-win-1.2.0.exe",
+		"idena-node-mac-1.2.0",
+		"idena-node-mac-arm64-1.2.0",
+	}
+	for _, assetName := range assetNames {
+		content := []byte("release build " + assetName)
+		requireTestNoError(t, os.WriteFile(filepath.Join(buildsDir, assetName), content, 0700))
+		requireTestNoError(t, os.WriteFile(
+			filepath.Join(buildsDir, assetName+".sha256"),
+			[]byte(fmt.Sprintf("%x  %s\n", sha256.Sum256(content), assetName)),
+			0600,
+		))
+	}
+	lockPath := filepath.Join(root, "compatibility", "stack-lock.json")
+	writeTestJSON(t, lockPath, map[string]any{
+		"status":        "approved",
+		"requiredGates": []string{gate},
+		"gateResults": map[string]any{gate: map[string]any{
+			"status":       "waived",
+			"reason":       "consensus v13 freeze released before its voting window",
+			"approvedBy":   "owner",
+			"date":         "2026-11-02",
+			"waivedCommit": testedCommit,
+			"releaseTag":   releaseTag,
+		}},
+		"components": []map[string]any{{
+			"name":              "idena-go",
+			"commit":            testedCommit,
+			"runtimeCodeCommit": testedCommit,
+		}},
+		"consumerPins": map[string]any{
+			"idena-desktop": map[string]any{"idena-go": testedCommit},
+		},
+	})
+	verify := func() (string, error) {
+		output, err := exec.Command(python, "verify_release_artifacts.py", lockPath, root, buildsDir, releaseTag).CombinedOutput()
+		return string(output), err
+	}
+
+	output, err := verify()
+	if err != nil || !strings.Contains(output, "independent rebuild waived") {
+		t.Fatalf("release files with a waived rebuild were rejected: err=%v output=%s", err, output)
+	}
+
+	linuxAsset := filepath.Join(buildsDir, assetNames[0])
+	requireTestNoError(t, os.WriteFile(linuxAsset, []byte("substituted binary"), 0700))
+	output, err = verify()
+	if err == nil || !strings.Contains(output, "checksum file does not match") {
+		t.Fatalf("a binary that does not match its checksum file was not rejected: err=%v output=%s", err, output)
+	}
+	requireTestNoError(t, os.WriteFile(linuxAsset, []byte("release build "+assetNames[0]), 0700))
+
+	requireTestNoError(t, os.Remove(linuxAsset+".sha256"))
+	output, err = verify()
+	if err == nil || !strings.Contains(output, "missing release files") {
+		t.Fatalf("a missing checksum file was not rejected: err=%v output=%s", err, output)
+	}
+}
+
 func writeTestJSON(t *testing.T, path string, value any) {
 	t.Helper()
 	raw, err := json.Marshal(value)
