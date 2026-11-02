@@ -240,6 +240,7 @@ func NewNodeWithInjections(config *config.Config, bus eventbus.Bus, statsCollect
 	}
 	ipfsProxy.KeepConnected(directPeers)
 	validation.SetAppConfig(config)
+	state.SetFrozenAddressCheck(func(addr common.Address) bool { return config.Consensus.IsFrozenAddress(addr) })
 	keyStore := keystore.NewKeyStore(keyStoreDir, keystore.StandardScryptN, keystore.StandardScryptP)
 	secStore := secstore.NewSecStore()
 
