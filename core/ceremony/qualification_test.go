@@ -515,6 +515,10 @@ func TestQualification_qualifyFlips(t *testing.T) {
 
 	require.Equal(t, 11, len(flipQualifications))
 	require.NotNil(t, reportersToReward)
+	// answers per flip: flips 0-4 are nobody's to solve, 5-7 everyone's (6), 8 two candidates', 9 and 10 three's
+	for idx, want := range []int{0, 0, 0, 0, 0, 6, 6, 6, 2, 3, 3} {
+		require.Equal(t, want, flipQualifications[idx].answersCount, "flip %v", idx)
+	}
 
 	require.Equal(t, types.GradeReported, flipQualifications[reportedFlipIdx].grade)
 	require.Zero(t, flipQualifications[reportedFlipIdx].gradeScore.Sign())

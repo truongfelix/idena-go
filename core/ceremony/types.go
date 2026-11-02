@@ -41,4 +41,7 @@ type FlipQualification struct {
 	answer     types.Answer
 	grade      types.Grade
 	gradeScore decimal.Decimal
+	// answersCount is how many long-session answers the flip got (a committee member who sent long answers answers
+	// every flip it was given, blank or not): 0 when none of its committee sent any.
+	answersCount int
 }

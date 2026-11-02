@@ -34,18 +34,26 @@ func TestFlipQualityPoints2(t *testing.T) {
 }
 
 func TestFlipQualityByAuthor(t *testing.T) {
-	a, b := common.Address{1}, common.Address{2}
+	a, b, c, d := common.Address{1}, common.Address{2}, common.Address{3}, common.Address{4}
 	q := []FlipQualification{
-		{status: Qualified},
-		{status: NotQualified},
-		{status: Qualified, grade: types.GradeReported},
-		{status: QualifiedByNone},
-		{status: WeaklyQualified},
+		{status: Qualified, answersCount: 4},
+		{status: NotQualified, answersCount: 1},
+		{status: Qualified, grade: types.GradeReported, answersCount: 5},
+		{status: QualifiedByNone, answersCount: 3},
+		{status: WeaklyQualified, answersCount: 3},
+		// no answer at all: the status the ceremony gives it (NotQualified) must not count
+		{status: NotQualified, answersCount: 0},
+		{status: NotQualified, answersCount: 0},
+		// left blank by its committee: counts, 0 points
+		{status: QualifiedByNone, answersCount: 4},
 	}
-	got := flipQualityByAuthor(q, map[common.Address][]int{a: {0, 1, 2}, b: {3, 4}})
+	got := flipQualityByAuthor(q, map[common.Address][]int{a: {0, 1, 2}, b: {3, 4, 5}, c: {6}, d: {7}})
 	require.Equal(t, authorFlipQuality{flips: 3, points2: 3}, got[a])
-	require.Equal(t, authorFlipQuality{flips: 2, points2: 2}, got[b])
-	require.Len(t, got, 2)
+	require.Equal(t, authorFlipQuality{flips: 2, points2: 2}, got[b], "a flip nobody answered was counted")
+	_, ok := got[c]
+	require.False(t, ok, "an author whose only flip got no answer has a result: %+v", got[c])
+	require.Equal(t, authorFlipQuality{flips: 1, points2: 0}, got[d], "a flip its committee left blank must count, 0 points")
+	require.Len(t, got, 3)
 }
 
 // Consensus v13 records the result of an identity's own flips in its window, whatever the ceremony made of the
