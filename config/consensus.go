@@ -3,6 +3,8 @@ package config
 import (
 	"math/big"
 	"time"
+
+	"github.com/idena-network/idena-go/common"
 )
 
 type ConsensusConf struct {
@@ -60,6 +62,9 @@ type ConsensusConf struct {
 	UnlockStakeAge                    uint8
 	EnableUpgrade11                   bool
 	EnableUpgrade12                   bool
+	EnableUpgrade13                   bool
+	// FrozenAddresses are addresses no transaction may be sent from or to (EnableUpgrade13).
+	FrozenAddresses map[common.Address]struct{}
 }
 
 type ConsensusVerson uint16
@@ -69,11 +74,12 @@ const (
 	ConsensusV10 ConsensusVerson = 10
 	ConsensusV11 ConsensusVerson = 11
 	ConsensusV12 ConsensusVerson = 12
+	ConsensusV13 ConsensusVerson = 13
 )
 
 var (
-	v9, v10, v11, v12 ConsensusConf
-	ConsensusVersions map[ConsensusVerson]*ConsensusConf
+	v9, v10, v11, v12, v13 ConsensusConf
+	ConsensusVersions      map[ConsensusVerson]*ConsensusConf
 )
 
 func init() {
@@ -137,6 +143,10 @@ func init() {
 	v12 = v11
 	ApplyConsensusVersion(ConsensusV12, &v12)
 	ConsensusVersions[ConsensusV12] = &v12
+
+	v13 = v12
+	ApplyConsensusVersion(ConsensusV13, &v13)
+	ConsensusVersions[ConsensusV13] = &v13
 }
 
 func ApplyConsensusVersion(ver ConsensusVerson, cfg *ConsensusConf) {
@@ -160,7 +170,27 @@ func ApplyConsensusVersion(ver ConsensusVerson, cfg *ConsensusConf) {
 		cfg.EnableUpgrade12 = true
 		cfg.StartActivationDate = time.Date(2023, time.July, 10, 8, 0, 0, 0, time.UTC).Unix()
 		cfg.EndActivationDate = time.Date(2023, time.July, 20, 0, 0, 0, 0, time.UTC).Unix()
+	case ConsensusV13:
+		cfg.Version = ConsensusV13
+		cfg.EnableUpgrade13 = true
+		cfg.FrozenAddresses = map[common.Address]struct{}{
+			// The iDNA <-> BSC bridge wallet: its wrapped token's supply on BSC was raised far above the iDNA it
+			// holds on 2026-11-01.
+			common.HexToAddress("0x98D16d7021930b788135dD834983394fF2De9869"): {},
+		}
+		// Provisional voting window: set before the release.
+		cfg.StartActivationDate = time.Date(2026, time.November, 9, 8, 0, 0, 0, time.UTC).Unix()
+		cfg.EndActivationDate = time.Date(2026, time.December, 31, 0, 0, 0, 0, time.UTC).Unix()
 	}
+}
+
+// IsFrozenAddress reports whether no transaction may be sent from or to addr under these rules.
+func (cfg *ConsensusConf) IsFrozenAddress(addr common.Address) bool {
+	if cfg == nil || !cfg.EnableUpgrade13 {
+		return false
+	}
+	_, ok := cfg.FrozenAddresses[addr]
+	return ok
 }
 
 func GetDefaultConsensusConfig() *ConsensusConf {

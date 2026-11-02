@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/idena-network/idena-go/common"
 	"github.com/idena-network/idena-go/config"
 	"github.com/idena-network/idena-go/database"
 	"github.com/syndtr/goleveldb/leveldb"
@@ -98,10 +99,30 @@ func TestApplyStoredConsensusVersionDoesNotDowngrade(t *testing.T) {
 	}
 }
 
+// A chain that passed version 13 starts with its rules, the frozen addresses included.
+func TestApplyStoredConsensusVersionAppliesV13(t *testing.T) {
+	datadir := t.TempDir()
+	writeConsensusVersion(t, datadir, uint32(config.ConsensusV13))
+	cfg := &config.Config{DataDir: datadir, Consensus: defaultConsensusCopy()}
+
+	if err := ApplyStoredConsensusVersion(cfg); err != nil {
+		t.Fatalf("ApplyStoredConsensusVersion() error = %v", err)
+	}
+	if cfg.Consensus.Version != config.ConsensusV13 || !cfg.Consensus.EnableUpgrade12 || !cfg.Consensus.EnableUpgrade13 {
+		t.Fatalf("consensus version = %d, want %d with every upgrade", cfg.Consensus.Version, config.ConsensusV13)
+	}
+	if !cfg.Consensus.IsFrozenAddress(common.HexToAddress("0x98D16d7021930b788135dD834983394fF2De9869")) {
+		t.Fatal("the bridge wallet is not frozen under the stored version 13")
+	}
+	if config.GetDefaultConsensusConfig().EnableUpgrade13 {
+		t.Fatal("the default consensus config was changed in place")
+	}
+}
+
 // A stored version this binary has no rules for stops the start: a node on older rules than its chain computes other
 // state roots. A version above the uint16 range must not wrap, and the configuration stays as it was.
 func TestApplyStoredConsensusVersionRefusesAnUnknownVersion(t *testing.T) {
-	for _, version := range []uint32{uint32(config.ConsensusV12) + 1, 65535, 65536 + uint32(config.ConsensusV12)} {
+	for _, version := range []uint32{uint32(config.ConsensusV13) + 1, 65535, 65536 + uint32(config.ConsensusV13)} {
 		t.Run(fmt.Sprint(version), func(t *testing.T) {
 			datadir := t.TempDir()
 			writeConsensusVersion(t, datadir, version)
