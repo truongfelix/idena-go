@@ -178,9 +178,9 @@ func ApplyConsensusVersion(ver ConsensusVerson, cfg *ConsensusConf) {
 			// holds on 2026-11-01.
 			common.HexToAddress("0x98D16d7021930b788135dD834983394fF2De9869"): {},
 		}
-		// Voting window (owner 2026-11-02).
-		cfg.StartActivationDate = time.Date(2026, time.November, 5, 8, 0, 0, 0, time.UTC).Unix()
-		cfg.EndActivationDate = time.Date(2026, time.December, 5, 0, 0, 0, 0, time.UTC).Unix()
+		// Voting window (owner 2026-11-02): from the release to the end of 2026.
+		cfg.StartActivationDate = time.Date(2026, time.November, 2, 0, 0, 0, 0, time.UTC).Unix()
+		cfg.EndActivationDate = time.Date(2027, time.January, 1, 0, 0, 0, 0, time.UTC).Unix()
 	}
 }
 
