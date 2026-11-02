@@ -2,6 +2,9 @@ package blockchain
 
 import (
 	"math/big"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/idena-network/idena-go/blockchain/types"
@@ -11,6 +14,7 @@ import (
 	"github.com/idena-network/idena-go/config"
 	"github.com/idena-network/idena-go/core/appstate"
 	"github.com/idena-network/idena-go/core/state"
+	"github.com/idena-network/idena-go/stats/collector"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
 	db "github.com/tendermint/tm-db"
@@ -52,7 +56,31 @@ func blockForRewards(chain *TestBlockchain) *types.Block {
 }
 
 // applyRewardsWith applies one block's rewards on a copy of the committed state, with or without the v13 rules.
-func applyRewardsWith(t *testing.T, chain *TestBlockchain, v13 bool, fee, tips *big.Int) (*appstate.AppState, *blockRewardCtx) {
+// burnRecorder records what the rewards report as burnt by flip quality; the rest goes to the collector stub.
+type burnRecorder struct {
+	collector.StatsCollector
+	burnt map[common.Address]*big.Int
+}
+
+func newBurnRecorder() *burnRecorder {
+	return &burnRecorder{StatsCollector: collector.NewStatsCollector(), burnt: map[common.Address]*big.Int{}}
+}
+
+func (r *burnRecorder) AddFlipQualityBurntCoins(addr common.Address, amount *big.Int) {
+	if r.burnt[addr] == nil {
+		r.burnt[addr] = new(big.Int)
+	}
+	r.burnt[addr].Add(r.burnt[addr], amount)
+}
+
+func (r *burnRecorder) of(addr common.Address) *big.Int {
+	if v := r.burnt[addr]; v != nil {
+		return v
+	}
+	return new(big.Int)
+}
+
+func applyRewardsWith(t *testing.T, chain *TestBlockchain, v13 bool, fee, tips *big.Int) (*appstate.AppState, *blockRewardCtx, *burnRecorder) {
 	saved := chain.config.Consensus
 	defer func() { chain.config.Consensus = saved }()
 	cfg := *saved
@@ -62,8 +90,9 @@ func applyRewardsWith(t *testing.T, chain *TestBlockchain, v13 bool, fee, tips *
 	require.NoError(t, err)
 	block := blockForRewards(chain)
 	ctx := chain.prepareBlockRewardCtx(block.Header.Coinbase(), appState, block.Height(), chain.Head)
-	chain.applyBlockRewards(fee, tips, appState, block, ctx, nil)
-	return appState, ctx
+	burns := newBurnRecorder()
+	chain.applyBlockRewards(fee, tips, appState, block, ctx, burns)
+	return appState, ctx, burns
 }
 
 func credited(before, after *appstate.AppState, addr common.Address) *big.Int {
@@ -105,8 +134,9 @@ func Test_ApplyBlockRewardsScaledByFlipQuality(t *testing.T) {
 	fee := ConvertToInt(decimal.NewFromInt(1000))
 	tips := ConvertToInt(decimal.NewFromInt(10))
 	before := chain.appState
-	after12, ctx := applyRewardsWith(t, chain, false, fee, tips)
-	after13, _ := applyRewardsWith(t, chain, true, fee, tips)
+	after12, ctx, burns12 := applyRewardsWith(t, chain, false, fee, tips)
+	after13, _, burns13 := applyRewardsWith(t, chain, true, fee, tips)
+	require.Empty(t, burns12.burnt, "v12 reported a burn")
 
 	require.Len(t, ctx.committee, len(members))
 	for _, item := range ctx.committee {
@@ -126,6 +156,8 @@ func Test_ApplyBlockRewardsScaledByFlipQuality(t *testing.T) {
 		require.Positive(t, r12.Sign(), "member %v got no reward under v12", addr)
 		committeePaid.Add(committeePaid, r12)
 		require.Equal(t, scale(r12, windows[addr]).String(), credited(before, after13, addr).String(), "member %v", addr)
+		require.Equal(t, new(big.Int).Sub(r12, credited(before, after13, addr)).String(), burns13.of(addr).String(),
+			"member %v: the burn reported is not what it lost", addr)
 	}
 	minted := new(big.Int).Add(chain.config.Consensus.BlockReward, chain.config.Consensus.FinalCommitteeReward)
 	proposerMinted := new(big.Int).Sub(minted, committeePaid)
@@ -134,6 +166,8 @@ func Test_ApplyBlockRewardsScaledByFlipQuality(t *testing.T) {
 	want.Sub(want, proposerMinted)
 	want.Add(want, scale(proposerMinted, windows[coinbase]))
 	require.Equal(t, want.String(), credited(before, after13, coinbase).String(), "proposer")
+	require.Equal(t, new(big.Int).Sub(proposerMinted, scale(proposerMinted, windows[coinbase])).String(), burns13.of(coinbase).String(),
+		"proposer: the burn reported is not what it lost")
 }
 
 // Consensus v13 in a pool: a proposal's stake part goes to the delegator the pool's nonce picks and its balance part
@@ -165,8 +199,8 @@ func Test_ApplyBlockRewardsFlipQualityZeroInAPool(t *testing.T) {
 	fee := ConvertToInt(decimal.NewFromInt(1000))
 	tips := ConvertToInt(decimal.NewFromInt(10))
 	before := chain.appState
-	after12, _ := applyRewardsWith(t, chain, false, fee, tips)
-	after13, _ := applyRewardsWith(t, chain, true, fee, tips)
+	after12, _, _ := applyRewardsWith(t, chain, false, fee, tips)
+	after13, _, burns13 := applyRewardsWith(t, chain, true, fee, tips)
 
 	total := func(after *appstate.AppState) *big.Int {
 		res := new(big.Int)
@@ -179,6 +213,11 @@ func Test_ApplyBlockRewardsFlipQualityZeroInAPool(t *testing.T) {
 	require.Equal(t, minted.String(), new(big.Int).Sub(total(after12), total(after13)).String(), "v13 minted something with every ratio 0")
 	feePart := new(big.Int).Sub(fee, math.ToInt(decimal.NewFromBigInt(fee, 0).Mul(decimal.NewFromFloat32(chain.config.Consensus.FeeBurnRate))))
 	require.Equal(t, new(big.Int).Add(feePart, tips).String(), total(after13).String())
+	totalBurnt := new(big.Int)
+	for _, v := range burns13.burnt {
+		totalBurnt.Add(totalBurnt, v)
+	}
+	require.Equal(t, minted.String(), totalBurnt.String(), "the burns reported do not add up to what was not minted")
 }
 
 // Consensus v13: every validation reward an identity earns (staking, flips, reports, invitations, and the invitee's
@@ -199,6 +238,7 @@ func Test_rewardValidIdentitiesScaledByFlipQuality(t *testing.T) {
 		}
 		return res
 	}
+	burnsBy := map[bool]*burnRecorder{false: newBurnRecorder(), true: newBurnRecorder()}
 	run := func(v13 bool) map[common.Address]*big.Int {
 		cfg := *config.ConsensusVersions[config.ConsensusV12]
 		cfg.EnableUpgrade13 = v13
@@ -235,7 +275,7 @@ func Test_rewardValidIdentitiesScaledByFlipQuality(t *testing.T) {
 			results.ReportersToRewardByFlip[0][addr] = &types.Candidate{Address: addr, NewIdentityState: uint8(state.Verified)}
 		}
 		rewardValidIdentities(appState, &cfg, map[common.ShardId]*types.ValidationResults{1: results}, []uint32{100},
-			map[common.Address]*big.Int{}, nil)
+			map[common.Address]*big.Int{}, burnsBy[v13])
 		credits := map[common.Address]*big.Int{}
 		for _, addr := range all {
 			credits[addr] = new(big.Int).Sub(holdings(appState, addr), before[addr])
@@ -243,9 +283,12 @@ func Test_rewardValidIdentitiesScaledByFlipQuality(t *testing.T) {
 		return credits
 	}
 	credits12, credits13 := run(false), run(true)
+	require.Empty(t, burnsBy[false].burnt, "v12 reported a burn")
 
 	for _, addr := range all {
 		r12, r13 := credits12[addr], credits13[addr]
+		require.Equal(t, new(big.Int).Sub(r12, r13).String(), burnsBy[true].of(addr).String(),
+			"%v: the burn reported is not what it lost", addr)
 		require.Positive(t, r12.Sign(), "%v earned nothing under v12: the test checks nothing for it", addr)
 		w, ok := windows[addr]
 		switch {
@@ -260,4 +303,31 @@ func Test_rewardValidIdentitiesScaledByFlipQuality(t *testing.T) {
 			require.True(t, diff.Sign() >= 0 && diff.Cmp(big.NewInt(5)) <= 0, "%v: v13 %v, v12 %v", addr, r13, r12)
 		}
 	}
+}
+
+// Every minted reward meets the flip quality rule through mintedReward: no other file of the package scales a reward
+// itself (a new reward path calls mintedReward, or is a listed exception).
+func TestOnlyMintedRewardScales(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	require.NoError(t, err)
+	var seen int
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(f)
+		require.NoError(t, err)
+		n := strings.Count(string(src), "scaleByFlipQuality(")
+		seen += n
+		if f != "flip_quality.go" {
+			require.Zero(t, n, "%v calls scaleByFlipQuality: go through mintedReward", f)
+		}
+	}
+	require.Equal(t, 2, seen, "the definition and mintedReward's call")
+	src, err := os.ReadFile("rewards.go")
+	require.NoError(t, err)
+	require.Equal(t, 5, strings.Count(string(src), "mintedReward("), "staking, flips, reports, inviter, invitee")
+	src, err = os.ReadFile("blockchain.go")
+	require.NoError(t, err)
+	require.Equal(t, 2, strings.Count(string(src), "mintedReward("), "proposer, committee")
 }
