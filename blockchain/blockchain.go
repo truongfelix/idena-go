@@ -501,6 +501,7 @@ func (chain *Blockchain) applyBlockOnState(appState *appstate.AppState, block *t
 	chain.applyStatusSwitch(appState, block, statsCollector)
 	chain.applyDelayedOfflinePenalties(appState, block, statsCollector)
 	undelegations := chain.applyDelegationSwitch(appState, block, statsCollector)
+	chain.queueFrozenUndelegations(appState)
 	chain.applyDiscriminationStatusSwitch(appState, block, statsCollector)
 	chain.applyNewEpoch(appState, block, statsCollector)
 	chain.applyBlockRewards(totalFee, totalTips, appState, block, blockRewardCtx, statsCollector)
@@ -524,6 +525,7 @@ func (chain *Blockchain) applyEmptyBlockOnState(
 	chain.applyStatusSwitch(appState, block, statsCollector)
 	chain.applyDelayedOfflinePenalties(appState, block, statsCollector)
 	undelegations := chain.applyDelegationSwitch(appState, block, statsCollector)
+	chain.queueFrozenUndelegations(appState)
 	chain.applyDiscriminationStatusSwitch(appState, block, statsCollector)
 	chain.applyNewEpoch(appState, block, statsCollector)
 	chain.switchPoolsToOffline(appState, undelegations, block)
@@ -1943,7 +1945,9 @@ func (chain *Blockchain) applyDelegationSwitch(appState *appstate.AppState, bloc
 		} else {
 			_, becamePool := newPools[delegation.Delegator]
 			noDelegatorPenalty := appState.State.GetPenaltySeconds(delegation.Delegator) == 0
-			if appState.State.Delegatee(delegation.Delegatee) == nil &&
+			// Consensus v13: a switch to a frozen address (queued before the upgrade) is dropped.
+			if !chain.config.Consensus.IsFrozenAddress(delegation.Delegatee) &&
+				appState.State.Delegatee(delegation.Delegatee) == nil &&
 				(enableUpgrade10 || appState.State.PendingUndelegation(delegation.Delegatee) == nil) &&
 				!becamePool && !appState.ValidatorsCache.IsPool(delegation.Delegator) &&
 				(!enableUpgrade10 || noDelegatorPenalty) {
@@ -1965,6 +1969,34 @@ func (chain *Blockchain) applyDelegationSwitch(appState *appstate.AppState, bloc
 	}
 	appState.State.ClearDelegations()
 	return undelegations
+}
+
+// queueFrozenUndelegations undelegates, under consensus v13, every identity delegated to a frozen address: it queues
+// the same switch an UndelegateTx queues, applied at the next delegation switch block, after which the identity's
+// rewards are its own. Until then its pool rewards are destroyed (the state never credits a frozen address). The
+// pools come from the validators cache, the same on every node; the order is sorted.
+func (chain *Blockchain) queueFrozenUndelegations(appState *appstate.AppState) {
+	consensus := chain.config.Consensus
+	if consensus == nil || !consensus.EnableUpgrade13 || len(consensus.FrozenAddresses) == 0 {
+		return
+	}
+	frozen := make([]common.Address, 0, len(consensus.FrozenAddresses))
+	for addr := range consensus.FrozenAddresses {
+		frozen = append(frozen, addr)
+	}
+	sort.Slice(frozen, func(i, j int) bool { return bytes.Compare(frozen[i][:], frozen[j][:]) < 0 })
+	for _, pool := range frozen {
+		for _, delegator := range appState.ValidatorsCache.PoolDelegators(pool) {
+			// The cache is refreshed when the block is committed: a delegator undelegated by this very block is
+			// still listed. The state is current.
+			if delegatee := appState.State.Delegatee(delegator); delegatee == nil || *delegatee != pool {
+				continue
+			}
+			if appState.State.DelegationSwitch(delegator) == nil {
+				appState.State.ToggleDelegationAddress(delegator, common.EmptyAddress)
+			}
+		}
+	}
 }
 
 func (chain *Blockchain) switchPoolsToOffline(appState *appstate.AppState, undelegations []*state.Delegation, block *types.Block) {
@@ -2369,6 +2401,12 @@ func (chain *Blockchain) validateBlock(checkState *appstate.AppState, block *typ
 
 	if !checkIfProposer(proposerAddr, checkState) {
 		return nil, errors.New("proposer is not identity")
+	}
+
+	// Consensus v13: a frozen address never earns a block reward. Checked on whole blocks only, under the rules of
+	// the block's height: fast sync checks old headers against the current rules.
+	if chain.config.Consensus.IsFrozenAddress(proposerAddr) {
+		return nil, errors.New("proposer is frozen")
 	}
 
 	var txs = types.Transactions(block.Body.Transactions)
