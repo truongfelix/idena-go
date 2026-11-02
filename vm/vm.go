@@ -41,7 +41,9 @@ type VmCreator = func(appState *appstate.AppState, blockHeaderProvider wasm.Bloc
 
 func NewVmImpl(appState *appstate.AppState, blockHeaderProvider wasm.BlockHeaderProvider, head *types.Header, statsCollector collector.StatsCollector, cfg *config.Config) VM {
 	gasCounter := new(env2.GasCounter)
-	return &VmImpl{env: env2.NewEnvImp(appState, head, gasCounter, statsCollector), appState: appState, gasCounter: gasCounter,
+	envImp := env2.NewEnvImp(appState, head, gasCounter, statsCollector)
+	envImp.SetFrozenAddresses(cfg.Consensus.FrozenAddresses)
+	return &VmImpl{env: envImp, appState: appState, gasCounter: gasCounter,
 		statsCollector: statsCollector, cfg: cfg, head: head, blockHeaderProvider: blockHeaderProvider}
 }
 

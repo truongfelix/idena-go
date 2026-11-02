@@ -54,6 +54,8 @@ type WasmEnv struct {
 	isDebug               bool
 	enableUpgrade12       bool
 	commitToState         bool
+	// frozen addresses may not be credited by a contract (consensus v13); nil before it.
+	frozen map[common.Address]struct{}
 }
 
 func (w *WasmEnv) Burn(meter *lib.GasMeter, amount *big.Int) error {
@@ -184,7 +186,18 @@ func (w *WasmEnv) SubBalance(meter *lib.GasMeter, amount *big.Int) error {
 
 func (w *WasmEnv) AddBalance(meter *lib.GasMeter, address lib.Address, amount *big.Int) {
 	meter.ConsumeGas(costs.GasToWasmGas(costs.MoveBalanceGas))
+	if _, ok := w.frozen[address]; ok {
+		// A frozen address (the BSC bridge wallet, consensus v13) may not receive iDNA. Panic to abort the call,
+		// as the other host-side guards here do; the VM recovers it into a failed contract call.
+		panic("transfer to a frozen address is not allowed")
+	}
 	w.addBalance(address, amount)
+}
+
+// SetFrozenAddresses sets the addresses no contract may credit (consensus v13). The production VM sets it from the
+// running consensus config right after construction; a nil map (tests, pre-v13) blocks nothing.
+func (w *WasmEnv) SetFrozenAddresses(frozen map[common.Address]struct{}) {
+	w.frozen = frozen
 }
 
 func (w *WasmEnv) ContractAddress(meter *lib.GasMeter) lib.Address {
@@ -319,6 +332,7 @@ func (w *WasmEnv) CreateSubEnv(contract lib.Address, method string, payAmount *b
 		isDebug:               w.isDebug,
 		enableUpgrade12:       w.enableUpgrade12,
 		commitToState:         w.commitToState,
+		frozen:                w.frozen,
 		statsCollector:        w.statsCollector,
 	}
 	subEnv.setBalance(contract, subContractBalance)

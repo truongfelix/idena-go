@@ -63,6 +63,8 @@ type EnvImp struct {
 	droppedContracts      map[common.Address]struct{}
 	events                []*types.TxEvent
 	contractStakeCache    map[common.Address]*big.Int
+	// frozen addresses may not be sent to by a contract (consensus v13); nil before it.
+	frozen map[common.Address]struct{}
 }
 
 func NewEnvImp(s *appstate.AppState, block *types.Header, gasCounter *GasCounter, statsCollector collector.StatsCollector) *EnvImp {
@@ -75,6 +77,12 @@ func NewEnvImp(s *appstate.AppState, block *types.Header, gasCounter *GasCounter
 		contractStakeCache:    map[common.Address]*big.Int{},
 		statsCollector:        statsCollector,
 	}
+}
+
+// SetFrozenAddresses sets the addresses no contract may send to (consensus v13). The production VM sets it from the
+// running consensus config; a nil map (tests, pre-v13) blocks nothing.
+func (e *EnvImp) SetFrozenAddresses(frozen map[common.Address]struct{}) {
+	e.frozen = frozen
 }
 
 func (e *EnvImp) Epoch() uint16 {
@@ -111,6 +119,9 @@ func (e *EnvImp) Send(ctx CallContext, dest common.Address, amount *big.Int) err
 	}
 	if amount.Sign() < 0 {
 		return errors.New("value must be non-negative")
+	}
+	if _, ok := e.frozen[dest]; ok {
+		return errors.New("recipient is frozen")
 	}
 	e.subBalance(ctx.ContractAddr(), amount)
 	e.addBalance(dest, amount)
