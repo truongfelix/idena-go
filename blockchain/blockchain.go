@@ -92,6 +92,7 @@ type Blockchain struct {
 	headShards      headShardsCache
 	ipfsLoadQueue   chan *attachments.StoreToIpfsAttachment
 	middlewares     []Middleware
+	identityLists   *identitylist.Pins
 }
 
 type txsExecutionContext struct {
@@ -134,20 +135,25 @@ type identityUpdateHookCtx struct {
 
 type Middleware = func(block *types.Block, appState *appstate.AppState)
 
-func NewBlockchain(config *config.Config, db dbm.DB, txpool *mempool.TxPool, appState *appstate.AppState,
+func NewBlockchain(cfg *config.Config, db dbm.DB, txpool *mempool.TxPool, appState *appstate.AppState,
 	ipfs ipfs.Proxy, secStore *secstore.SecStore, bus eventbus.Bus, offlineDetector *OfflineDetector, keyStore *keystore.KeyStore, subManager *subscriptions.Manager, upgrader *upgrade.Upgrader) *Blockchain {
+	identityListKeep := config.GetDefaultIpfsConfig().IdentityListKeep
+	if cfg.IpfsConf != nil {
+		identityListKeep = cfg.IpfsConf.IdentityListKeep
+	}
 	return &Blockchain{
+		identityLists:   identitylist.NewPins(db, ipfs, identityListKeep),
 		repo:            database.NewRepo(db),
-		config:          config,
+		config:          cfg,
 		log:             log.New(),
 		txpool:          txpool,
 		appState:        appState,
 		ipfs:            ipfs,
-		timing:          NewTiming(config.Validation),
+		timing:          NewTiming(cfg.Validation),
 		bus:             bus,
 		secStore:        secStore,
 		offlineDetector: offlineDetector,
-		indexer:         newBlockchainIndexer(db, bus, config, keyStore),
+		indexer:         newBlockchainIndexer(db, bus, cfg, keyStore),
 		subManager:      subManager,
 		upgrader:        upgrader,
 		ipfsLoadQueue:   make(chan *attachments.StoreToIpfsAttachment, 100),
@@ -472,6 +478,7 @@ func (chain *Blockchain) AddBlock(block *types.Block, checkState *appstate.AppSt
 		if err := chain.insertBlock(block, blockInsertionResult.identityStateDiff, blockInsertionResult.txReceipts); err != nil {
 			return err
 		}
+		chain.pinIdentityList(block, blockInsertionResult.identityList)
 
 		for _, task := range blockInsertionResult.txTasks {
 			task()

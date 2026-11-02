@@ -170,3 +170,44 @@ func TestEmptyIdentityListCidKeepsHeaderBytes(t *testing.T) {
 	require.NoError(t, decoded.FromBytes(b3))
 	require.Equal(t, []byte{7}, decoded.IdentityListCid())
 }
+
+func TestReadIdentityListBack(t *testing.T) {
+	chain, appState := identityListTestChain(t, true)
+	var listHeights []uint64
+	var lastRows []identitylist.Row
+	for len(listHeights) < 3 {
+		chain.GenerateBlocks(1, 0)
+		if len(chain.Head.IdentityListCid()) > 0 {
+			listHeights = append(listHeights, chain.Head.Height())
+			expected, err := identitylist.FromState(chain.Head.Height(), appState.State)
+			require.NoError(t, err)
+			_, lastRows = decodeList(t, expected)
+		}
+	}
+	c, index, rows, err := chain.IdentityList(0)
+	require.NoError(t, err)
+	require.Equal(t, listHeights[2], index.Height)
+	require.Equal(t, chain.GetBlockHeaderByHeight(listHeights[2]).IdentityListCid(), c.Bytes())
+	require.Equal(t, lastRows, rows)
+
+	_, index, _, err = chain.IdentityList(listHeights[0])
+	require.NoError(t, err)
+	require.Equal(t, listHeights[0], index.Height)
+
+	_, _, _, err = chain.IdentityList(listHeights[0] + 1)
+	require.ErrorContains(t, err, "carries no identity list")
+	_, _, _, err = chain.IdentityList(chain.Head.Height() + 10)
+	require.ErrorContains(t, err, "no block at height")
+}
+
+func decodeList(t *testing.T, l *identitylist.List) (*identitylist.Index, []identitylist.Row) {
+	index, err := identitylist.DecodeIndex(l.Index)
+	require.NoError(t, err)
+	var rows []identitylist.Row
+	for _, p := range l.Pages {
+		r, err := identitylist.DecodePage(p)
+		require.NoError(t, err)
+		rows = append(rows, r...)
+	}
+	return index, rows
+}
