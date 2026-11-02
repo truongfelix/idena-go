@@ -639,9 +639,6 @@ func (chain *Blockchain) applyBlockRewards(totalFee *big.Int, totalTips *big.Int
 	intFeeReward := new(big.Int)
 	intFeeReward.Sub(totalFee, intBurn)
 
-	totalReward := big.NewInt(0).Add(blockProposerReward, intFeeReward)
-	totalReward.Add(totalReward, totalTips)
-
 	coinbase := block.Header.Coinbase()
 
 	status := appState.State.GetIdentityState(coinbase)
@@ -655,6 +652,12 @@ func (chain *Blockchain) applyBlockRewards(totalFee *big.Int, totalTips *big.Int
 		status = appState.State.GetIdentityState(subIdentity)
 		stakeDest = subIdentity
 	}
+
+	// v13: the minted part follows the flip quality of the identity whose stake is paid; fees and tips do not.
+	blockProposerReward = scaleByFlipQuality(appState, chain.config.Consensus, stakeDest, blockProposerReward)
+
+	totalReward := big.NewInt(0).Add(blockProposerReward, intFeeReward)
+	totalReward.Add(totalReward, totalTips)
 
 	reward, stake := splitReward(totalReward, status == state.Newbie, chain.config.Consensus)
 
@@ -1328,6 +1331,8 @@ func (chain *Blockchain) rewardFinalCommittee(appState *appstate.AppState, block
 		}
 		remainingReward.Sub(remainingReward, totalRewardInt)
 		paidReward.Add(paidReward, totalRewardInt)
+		// v13: the part the member's flip quality removes is never minted (it does not go to the proposer either).
+		totalRewardInt = scaleByFlipQuality(appState, chain.config.Consensus, addr, totalRewardInt)
 
 		identityState := appState.State.GetIdentityState(addr)
 

@@ -108,6 +108,8 @@ type cacheValue struct {
 	missed                   bool
 	participated             bool
 	delegatee                *common.Address
+	// flipQuality is the result of the identity's own flips in this ceremony, recorded under v13 only.
+	flipQuality authorFlipQuality
 }
 
 type lottery struct {
@@ -971,6 +973,9 @@ func applyOnState(cfg *config.ConsensusConf, appState *appstate.AppState, curren
 	if !value.missed {
 		appState.State.AddNewScore(addr, common.EncodeScore(value.shortFlipPoint, value.shortQualifiedFlipsCount))
 	}
+	if cfg.EnableUpgrade13 {
+		appState.State.AddFlipQuality(addr, value.flipQuality.flips, value.flipQuality.points2)
+	}
 	appState.State.SetBirthday(addr, value.birthday)
 
 	if value.state.NewbieOrBetter() && (value.prevState == state.Suspended || value.prevState == state.Zombie || value.prevState == state.Candidate) && value.delegatee != nil {
@@ -1112,6 +1117,11 @@ func (vc *ValidationCeremony) ApplyNewEpoch(height uint64, appState *appstate.Ap
 
 		vc.logInfoWithInteraction("Approved candidates", "shardId", shardId, "cnt", len(approvedCandidates))
 
+		var authorsFlipQuality map[common.Address]authorFlipQuality
+		if vc.config.Consensus.EnableUpgrade13 {
+			authorsFlipQuality = flipQualityByAuthor(flipQualification, flipsByAuthor)
+		}
+
 		notApprovedFlips := vc.getNotApprovedFlips(approvedCandidatesSet, shardId)
 
 		for idx, candidate := range shard.candidates {
@@ -1166,6 +1176,7 @@ func (vc *ValidationCeremony) ApplyNewEpoch(height uint64, appState *appstate.Ap
 				missed:                   missed,
 				participated:             participated,
 				delegatee:                identity.Delegatee(),
+				flipQuality:              authorsFlipQuality[addr],
 			}
 
 			epochApplyingValues[addr] = value
