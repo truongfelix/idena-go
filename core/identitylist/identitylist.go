@@ -1,7 +1,7 @@
 // Package identitylist builds the list of every identity in the state at a block, in pages stored as raw IPFS
 // blocks, and the index block whose CID consensus v13 writes in the header of each list block.
 //
-// Format, version 1 (all integers big-endian, amounts as 32-byte unsigned integers):
+// Format, version 2 (all integers big-endian, amounts as 32-byte unsigned integers):
 //
 //	page:  version (1 byte) | rows, sorted by address, RowSize bytes each
 //	index: version (1 byte) | height (8) | identity count (4) | page count (4) | the CID of each page, as bytes,
@@ -9,7 +9,11 @@
 //	row:   address (20) | state (1) | birthday (2) | stake (32) | locked stake (32) | replenished stake (32) |
 //	       has delegatee (1) | delegatee (20, zero without one) | penalty (32) | penalty seconds (2) |
 //	       penalty timestamp (8) | qualified flips (4) | short flip points x2 (4) | scores count (1) |
-//	       scores (common.LastScoresCount bytes, zero-padded)
+//	       scores (common.LastScoresCount bytes, zero-padded) | flip quality: flips made (2) |
+//	       flip quality: points x2 (2)
+//
+// The flip quality counts are the identity's v13 window summed (state.Identity.FlipQuality): its mining rewards are
+// scaled by points / flips made, or kept whole while it has none. Version 1 (no flip quality) was never released.
 //
 // A page holds at most PageSize rows, so it stays under the 256 KiB a single raw IPFS block holds: its CID is the
 // CIDv1 raw SHA2-256 of its bytes, which is also what the node's IPFS Add returns for it.
@@ -28,12 +32,12 @@ import (
 )
 
 const (
-	Version = 1
+	Version = 2
 
 	amountSize = 32
 	// RowSize is the size of one identity's row.
 	RowSize = common.AddressLength + 1 + 2 + 3*amountSize + 1 + common.AddressLength + amountSize + 2 + 8 + 4 + 4 + 1 +
-		common.LastScoresCount
+		common.LastScoresCount + 2 + 2
 	// PageSize is the number of rows in every page but the last.
 	PageSize = 1000
 
@@ -62,11 +66,14 @@ type Row struct {
 	QualifiedFlips   uint32
 	ShortFlipPoints  uint32 // twice the points, as the state stores them
 	Scores           []byte
+	FlipQualityFlips uint16
+	// FlipQualityPoints is twice the points, as the state stores them.
+	FlipQualityPoints uint16
 }
 
 // RowFromIdentity reads the row of one identity record.
 func RowFromIdentity(addr common.Address, identity state.Identity) Row {
-	return Row{
+	r := Row{
 		Address:          addr,
 		State:            identity.State,
 		Birthday:         identity.Birthday,
@@ -81,6 +88,17 @@ func RowFromIdentity(addr common.Address, identity state.Identity) Row {
 		ShortFlipPoints:  identity.ShortFlipPoints,
 		Scores:           identity.Scores,
 	}
+	flips, points2 := identity.FlipQuality()
+	r.FlipQualityFlips, r.FlipQualityPoints = clampUint16(flips), clampUint16(points2)
+	return r
+}
+
+// clampUint16 bounds a window sum, which the state keeps far below 2^16 (10 ceremonies of at most 127 flips).
+func clampUint16(v uint32) uint16 {
+	if v > 0xffff {
+		return 0xffff
+	}
+	return uint16(v)
 }
 
 // List is a built list: its pages and its index, with their CIDs.
@@ -208,5 +226,7 @@ func appendRow(b []byte, r Row) []byte {
 	}
 	b = append(b, byte(len(scores)))
 	b = append(b, scores...)
-	return append(b, make([]byte, common.LastScoresCount-len(scores))...)
+	b = append(b, make([]byte, common.LastScoresCount-len(scores))...)
+	b = binary.BigEndian.AppendUint16(b, r.FlipQualityFlips)
+	return binary.BigEndian.AppendUint16(b, r.FlipQualityPoints)
 }

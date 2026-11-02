@@ -111,5 +111,7 @@ func decodeRow(b []byte) Row {
 		}
 		r.Scores = append([]byte(nil), scores[:n]...)
 	}
+	r.FlipQualityFlips = binary.BigEndian.Uint16(take(2))
+	r.FlipQualityPoints = binary.BigEndian.Uint16(take(2))
 	return r
 }

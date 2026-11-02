@@ -31,6 +31,9 @@ type IdentityListItem struct {
 	QualifiedFlips   uint32          `json:"qualifiedFlips"`
 	ShortFlipPoints  float32         `json:"shortFlipPoints"`
 	Scores           hexutil.Bytes   `json:"scores"`
+	// FlipQualityFlips and FlipQualityPoints are the v13 window summed: mining rewards scale by points / flips.
+	FlipQualityFlips  uint16  `json:"flipQualityFlips"`
+	FlipQualityPoints float32 `json:"flipQualityPoints"`
 }
 
 // IdentityList returns the identity list of the block at height, or the last one this node pinned when height is
@@ -72,18 +75,20 @@ func (api *DnaApi) IdentityList(height *uint64, page *int) (*IdentityList, error
 
 func convertIdentityListRow(r identitylist.Row) IdentityListItem {
 	return IdentityListItem{
-		Address:          r.Address,
-		State:            identityStateName(r.State),
-		Birthday:         r.Birthday,
-		Stake:            blockchain.ConvertToFloat(r.Stake),
-		LockedStake:      blockchain.ConvertToFloat(r.LockedStake),
-		ReplenishedStake: blockchain.ConvertToFloat(r.ReplenishedStake),
-		Delegatee:        r.Delegatee,
-		Penalty:          blockchain.ConvertToFloat(r.Penalty),
-		PenaltySeconds:   r.PenaltySeconds,
-		PenaltyTimestamp: r.PenaltyTimestamp,
-		QualifiedFlips:   r.QualifiedFlips,
-		ShortFlipPoints:  float32(r.ShortFlipPoints) / 2,
-		Scores:           r.Scores,
+		Address:           r.Address,
+		State:             identityStateName(r.State),
+		Birthday:          r.Birthday,
+		Stake:             blockchain.ConvertToFloat(r.Stake),
+		LockedStake:       blockchain.ConvertToFloat(r.LockedStake),
+		ReplenishedStake:  blockchain.ConvertToFloat(r.ReplenishedStake),
+		Delegatee:         r.Delegatee,
+		Penalty:           blockchain.ConvertToFloat(r.Penalty),
+		PenaltySeconds:    r.PenaltySeconds,
+		PenaltyTimestamp:  r.PenaltyTimestamp,
+		QualifiedFlips:    r.QualifiedFlips,
+		ShortFlipPoints:   float32(r.ShortFlipPoints) / 2,
+		Scores:            r.Scores,
+		FlipQualityFlips:  r.FlipQualityFlips,
+		FlipQualityPoints: float32(r.FlipQualityPoints) / 2,
 	}
 }

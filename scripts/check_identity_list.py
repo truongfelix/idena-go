@@ -8,7 +8,7 @@ the CID of an index block listing every identity in the state after that block. 
      all report the same CID;
   2. downloads the index and its pages (from an IPFS gateway with --gateway, otherwise from the first node's
      ipfs_get) and checks that the SHA-256 of each block is the one its CID names;
-  3. decodes the rows (format version 1), checks their order and count, and prints a summary; --csv writes them.
+  3. decodes the rows (format version 2), checks their order and count, and prints a summary; --csv writes them.
 
 Python 3.8+, standard library only. Exit code: 0 the list matches, 1 it does not, 2 it could not be checked.
 
@@ -27,11 +27,11 @@ import urllib.request
 from collections import Counter
 from decimal import Decimal
 
-VERSION = 1
+VERSION = 2
 ADDRESS = 20
 AMOUNT = 32
 SCORES = 10
-ROW_SIZE = ADDRESS + 1 + 2 + 3 * AMOUNT + 1 + ADDRESS + AMOUNT + 2 + 8 + 4 + 4 + 1 + SCORES  # 201
+ROW_SIZE = ADDRESS + 1 + 2 + 3 * AMOUNT + 1 + ADDRESS + AMOUNT + 2 + 8 + 4 + 4 + 1 + SCORES + 2 + 2  # 205
 PAGE_SIZE = 1000
 DNA = Decimal(10) ** 18
 STATES = {0: "Undefined", 1: "Invite", 2: "Candidate", 3: "Verified", 4: "Suspended", 5: "Killed", 6: "Zombie",
@@ -148,6 +148,7 @@ def decode_page(data):
         qualified_flips, short_points = struct.unpack(">II", take(8))
         n = take(1)[0]
         scores = take(SCORES)[:min(n, SCORES)]
+        fq_flips, fq_points = struct.unpack(">HH", take(4))
         rows.append({
             "address": "0x" + address.hex(), "state": STATES.get(state, "Unknown(%d)" % state),
             "birthday": birthday, "stake": stake, "lockedStake": locked, "replenishedStake": replenished,
@@ -155,6 +156,8 @@ def decode_page(data):
             "penaltySeconds": penalty_seconds, "penaltyTimestamp": penalty_timestamp,
             "qualifiedFlips": qualified_flips, "shortFlipPoints": Decimal(short_points) / 2,
             "scores": scores.hex(),
+            # v13 flip quality window: rewards scale by points / flips (whole while flips is 0)
+            "flipQualityFlips": fq_flips, "flipQualityPoints": Decimal(fq_points) / 2,
         })
     return rows
 

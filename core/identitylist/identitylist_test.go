@@ -36,6 +36,9 @@ func fullRow(i int) Row {
 		QualifiedFlips:   uint32(30 + i),
 		ShortFlipPoints:  uint32(55 + i),
 		Scores:           []byte{0x63, 0x53, byte(i)},
+		// i+1 so that every full row has a window, and points below twice the flips
+		FlipQualityFlips:  uint16(i + 1),
+		FlipQualityPoints: uint16(i),
 	}
 }
 
@@ -67,7 +70,7 @@ func decodeAll(t *testing.T, l *List) (*Index, []Row) {
 }
 
 func TestRowSize(t *testing.T) {
-	require.Equal(t, 201, RowSize)
+	require.Equal(t, 205, RowSize)
 	require.Len(t, appendRow(nil, fullRow(1)), RowSize)
 	require.Len(t, appendRow(nil, Row{}), RowSize)
 	require.Less(t, 1+PageSize*RowSize, maxRawBlockSize)
@@ -216,9 +219,14 @@ func TestDecodeRefusesDamagedBlocks(t *testing.T) {
 	_, err = DecodePage(l.Pages[0][:len(l.Pages[0])-1])
 	require.Error(t, err)
 	bad := append([]byte{}, l.Index...)
-	bad[0] = 2
-	_, err = DecodeIndex(bad)
-	require.Error(t, err)
+	for _, v := range []byte{Version - 1, Version + 1} {
+		bad[0] = v
+		_, err = DecodeIndex(bad)
+		require.Error(t, err, "version %v", v)
+		page := append([]byte{v}, l.Pages[0][1:]...)
+		_, err = DecodePage(page)
+		require.Error(t, err, "page version %v", v)
+	}
 }
 
 // The cost a list block adds to every node: the walk over the state's identities, the encoding and the hashes.
