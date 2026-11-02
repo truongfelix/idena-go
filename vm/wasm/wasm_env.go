@@ -56,7 +56,13 @@ type WasmEnv struct {
 	commitToState         bool
 	// frozen addresses may not be credited by a contract (consensus v13); nil before it.
 	frozen map[common.Address]struct{}
+	// frozenCredit is set, for the whole transaction (sub envs share it), once a contract tried to credit a frozen
+	// address: the runtime ignores what a host transfer returns, so the VM fails the transaction afterwards.
+	frozenCredit *bool
 }
+
+// ErrFrozenRecipient fails a contract transaction that tried to credit a frozen address (consensus v13).
+var ErrFrozenRecipient = errors.New("transfer to a frozen address is not allowed")
 
 func (w *WasmEnv) Burn(meter *lib.GasMeter, amount *big.Int) error {
 	collector.AddContractBurntCoins(w.statsCollector, w.ctx.ContractAddr(), func(address common.Address) *big.Int {
@@ -187,9 +193,13 @@ func (w *WasmEnv) SubBalance(meter *lib.GasMeter, amount *big.Int) error {
 func (w *WasmEnv) AddBalance(meter *lib.GasMeter, address lib.Address, amount *big.Int) {
 	meter.ConsumeGas(costs.GasToWasmGas(costs.MoveBalanceGas))
 	if _, ok := w.frozen[address]; ok {
-		// A frozen address (the BSC bridge wallet, consensus v13) may not receive iDNA. Panic to abort the call,
-		// as the other host-side guards here do; the VM recovers it into a failed contract call.
-		panic("transfer to a frozen address is not allowed")
+		// A frozen address (the BSC bridge wallet, consensus v13) may not receive iDNA. Credit nothing and mark the
+		// transaction: a panic here would be swallowed by the runtime, which ignores the transfer's result, and the
+		// amount already taken from the sender would vanish. The VM fails the whole transaction instead.
+		if w.frozenCredit != nil {
+			*w.frozenCredit = true
+		}
+		return
 	}
 	w.addBalance(address, amount)
 }
@@ -198,6 +208,12 @@ func (w *WasmEnv) AddBalance(meter *lib.GasMeter, address lib.Address, amount *b
 // running consensus config right after construction; a nil map (tests, pre-v13) blocks nothing.
 func (w *WasmEnv) SetFrozenAddresses(frozen map[common.Address]struct{}) {
 	w.frozen = frozen
+	w.frozenCredit = new(bool)
+}
+
+// triedFrozenCredit reports whether a contract of this transaction tried to credit a frozen address.
+func (w *WasmEnv) triedFrozenCredit() bool {
+	return w.frozenCredit != nil && *w.frozenCredit
 }
 
 func (w *WasmEnv) ContractAddress(meter *lib.GasMeter) lib.Address {
@@ -333,6 +349,7 @@ func (w *WasmEnv) CreateSubEnv(contract lib.Address, method string, payAmount *b
 		enableUpgrade12:       w.enableUpgrade12,
 		commitToState:         w.commitToState,
 		frozen:                w.frozen,
+		frozenCredit:          w.frozenCredit,
 		statsCollector:        w.statsCollector,
 	}
 	subEnv.setBalance(contract, subContractBalance)

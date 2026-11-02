@@ -7,6 +7,7 @@ import "embed"
 //go:embed sum_func.wasm
 //go:embed test-cases.wasm
 //go:embed shared-fungible-token-wallet.wasm
+//go:embed frozen_transfer.wasm
 var content embed.FS
 
 func Erc20() ([]byte, error) {
@@ -23,6 +24,11 @@ func SumFunc() ([]byte, error) {
 
 func TestCases() ([]byte, error) {
 	return content.ReadFile("test-cases.wasm")
+}
+
+// FrozenTransfer is a contract whose "send"(to, amount) makes one iDNA transfer promise (frozen_transfer.wat).
+func FrozenTransfer() ([]byte, error) {
+	return content.ReadFile("frozen_transfer.wasm")
 }
 
 func SharedFungibleToken() ([]byte, error) {

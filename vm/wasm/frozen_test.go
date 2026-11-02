@@ -2,20 +2,24 @@ package wasm
 
 import (
 	"math/big"
+	"math/rand"
 	"testing"
 
+	"github.com/idena-network/idena-go/blockchain/attachments"
 	"github.com/idena-network/idena-go/blockchain/types"
 	"github.com/idena-network/idena-go/common"
 	"github.com/idena-network/idena-go/common/eventbus"
+	"github.com/idena-network/idena-go/config"
 	"github.com/idena-network/idena-go/core/appstate"
 	"github.com/idena-network/idena-go/crypto"
+	"github.com/idena-network/idena-go/vm/wasm/testdata"
 	lib "github.com/idena-network/idena-wasm-binding/lib"
 	"github.com/stretchr/testify/require"
 	dbm "github.com/tendermint/tm-db"
 )
 
-// A contract crediting a frozen address (the BSC bridge wallet, consensus v13) aborts; crediting any other address,
-// or the same address before the freeze, does not.
+// A contract crediting a frozen address (the BSC bridge wallet, consensus v13) credits nothing and marks the
+// transaction, sub envs included; crediting any other address, or the same address before the freeze, does not.
 func TestWasmEnvAddBalanceBlocksFrozenAddress(t *testing.T) {
 	bridge := common.HexToAddress("0x98D16d7021930b788135dD834983394fF2De9869")
 	other := common.Address{0x1}
@@ -29,28 +33,84 @@ func TestWasmEnvAddBalanceBlocksFrozenAddress(t *testing.T) {
 		tx, _ = types.SignTx(tx, key)
 		return NewWasmEnv(appState, nil, NewContractContext(tx), &types.Header{ProposedHeader: &types.ProposedHeader{}}, "m", false, false, true, nil)
 	}
-	credit := func(e *WasmEnv, addr common.Address) (panicked bool) {
-		defer func() {
-			if recover() != nil {
-				panicked = true
-			}
-		}()
+	credit := func(e *WasmEnv, addr common.Address) {
 		e.AddBalance(&lib.GasMeter{}, addr, big.NewInt(5))
-		return false
 	}
 
 	// Before the freeze: crediting the bridge is allowed.
-	require.False(t, credit(newEnv(), bridge))
-
-	// After the freeze: crediting the bridge aborts; another address is unaffected.
 	e := newEnv()
-	e.SetFrozenAddresses(map[common.Address]struct{}{bridge: {}})
-	require.True(t, credit(e, bridge), "crediting a frozen address must abort")
-	require.False(t, credit(e, other), "crediting another address must still work")
-	require.Zero(t, big.NewInt(5).Cmp(e.getBalance(other)))
+	credit(e, bridge)
+	require.Zero(t, big.NewInt(5).Cmp(e.getBalance(bridge)))
+	require.False(t, e.triedFrozenCredit())
 
-	// A sub-env inherits the frozen set.
+	// After the freeze: another address is credited; the bridge is not, and the transaction is marked.
+	e = newEnv()
+	e.SetFrozenAddresses(map[common.Address]struct{}{bridge: {}})
+	credit(e, other)
+	require.Zero(t, big.NewInt(5).Cmp(e.getBalance(other)))
+	require.False(t, e.triedFrozenCredit())
+	credit(e, bridge)
+	require.Zero(t, e.getBalance(bridge).Sign(), "a frozen address was credited")
+	require.True(t, e.triedFrozenCredit())
+
+	// A sub env inherits the frozen set and marks the whole transaction.
+	e = newEnv()
+	e.SetFrozenAddresses(map[common.Address]struct{}{bridge: {}})
 	sub, err := e.CreateSubEnv(common.Address{0x2}, "m", big.NewInt(0), false)
 	require.NoError(t, err)
-	require.True(t, credit(sub.(*WasmEnv), bridge))
+	credit(sub.(*WasmEnv), bridge)
+	require.Zero(t, sub.(*WasmEnv).getBalance(bridge).Sign())
+	require.True(t, e.triedFrozenCredit(), "a sub env's frozen credit must fail the transaction")
+}
+
+// A real contract sending iDNA to a frozen address: under v13 the call fails, the contract keeps the amount and the
+// address receives nothing; another recipient, or the same one before v13, is paid.
+func TestWasmTransferToFrozenAddressFailsTheCall(t *testing.T) {
+	code, err := testdata.FrozenTransfer()
+	require.NoError(t, err)
+	bridge := common.HexToAddress("0x98D16d7021930b788135dD834983394fF2De9869")
+	other := common.Address{0x3}
+
+	cases := []struct {
+		name      string
+		version   config.ConsensusVerson
+		dest      common.Address
+		succeeds  bool
+		destGains bool
+	}{
+		{"v13 to the frozen address", config.ConsensusV13, bridge, false, false},
+		{"v13 to another address", config.ConsensusV13, other, true, true},
+		{"v12 to the bridge", config.ConsensusV12, bridge, true, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			appState, _ := appstate.NewAppState(dbm.NewMemDB(), eventbus.New())
+			require.NoError(t, appState.Initialize(0))
+			key, _ := crypto.GenerateKeyFromSeed(rand.New(rand.NewSource(7)))
+			receipt := deployContract(key, appState, code)
+			require.True(t, receipt.Success, receipt.Error)
+			contract := receipt.ContractAddress
+			appState.State.SetBalance(contract, big.NewInt(1000))
+			require.NoError(t, appState.Commit(nil))
+
+			cfg := getLatestConfig()
+			cfg.Consensus = config.ConsensusVersions[tc.version]
+			payload, _ := attachments.CreateCallContractAttachment("send", tc.dest.Bytes(), big.NewInt(100).Bytes()).ToBytes()
+			tx := &types.Transaction{AccountNonce: nonce, To: &contract, Type: types.CallContractTx, Payload: payload, Amount: big.NewInt(0)}
+			tx, _ = types.SignTx(tx, key)
+			nonce++
+			receipt = NewWasmVM(appState, nil, createHeader(1, 1), cfg, true, nil).Run(tx, 612000000)
+
+			require.Equal(t, tc.succeeds, receipt.Success, "receipt error: %v", receipt.Error)
+			if !tc.succeeds {
+				require.ErrorIs(t, receipt.Error, ErrFrozenRecipient)
+			}
+			wantContract, wantDest := int64(1000), int64(0)
+			if tc.destGains {
+				wantContract, wantDest = 900, 100
+			}
+			require.Equal(t, wantContract, appState.State.GetBalance(contract).Int64())
+			require.Equal(t, wantDest, appState.State.GetBalance(tc.dest).Int64())
+		})
+	}
 }
