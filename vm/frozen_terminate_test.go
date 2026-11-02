@@ -17,10 +17,10 @@ import (
 	dbm "github.com/tendermint/tm-db"
 )
 
-// Terminating an embedded contract refunds half its stake to an address the terminate call names: under v13 the
-// call fails when that address is frozen, and the contract and its stake stay; before v13 and for any other address
-// the refund is paid.
-func TestTerminateRefundToFrozenAddressFails(t *testing.T) {
+// Terminating an embedded contract refunds half its stake to an address the terminate call names: under v13, when
+// that address is frozen, the contract still terminates and the refund is destroyed with the other half; before v13
+// and for any other address the refund is paid.
+func TestTerminateRefundToFrozenAddressIsDestroyed(t *testing.T) {
 	bridge := common.HexToAddress("0x98D16d7021930b788135dD834983394fF2De9869")
 	other := common.Address{0x7}
 	stake := new(big.Int).Mul(big.NewInt(1000), common.DnaBase)
@@ -65,10 +65,10 @@ func TestTerminateRefundToFrozenAddressFails(t *testing.T) {
 	v13 := config.ConsensusVersions[config.ConsensusV13]
 
 	receipt, appState, contract := run(v13, bridge)
-	require.False(t, receipt.Success)
-	require.EqualError(t, receipt.Error, "refund recipient is frozen")
+	require.True(t, receipt.Success, "terminate to a frozen address: %v", receipt.Error)
 	require.Zero(t, appState.State.GetBalance(bridge).Sign(), "the frozen address received the refund")
-	require.Zero(t, stake.Cmp(appState.State.GetContractStake(contract)), "the contract lost its stake")
+	require.True(t, appState.State.GetContractStake(contract) == nil || appState.State.GetContractStake(contract).Sign() == 0,
+		"the contract kept its stake")
 
 	receipt, appState, _ = run(v13, other)
 	require.True(t, receipt.Success, "terminate to another address: %v", receipt.Error)

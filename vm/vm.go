@@ -136,10 +136,6 @@ func (vm *VmImpl) terminate(tx *types.Transaction, from *common.Address) (addr c
 	var stakeDest common.Address
 	var keysToSave [][]byte
 	stakeDest, keysToSave, err = contract.Terminate(attach.Args...)
-	if err == nil && vm.cfg.Consensus.IsFrozenAddress(stakeDest) {
-		// The stake refund may not go to a frozen address (consensus v13): the contract stays.
-		err = errors.New("refund recipient is frozen")
-	}
 	if err == nil {
 		vm.env.Terminate(ctx, keysToSave, stakeDest)
 	}

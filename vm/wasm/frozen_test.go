@@ -18,8 +18,8 @@ import (
 	dbm "github.com/tendermint/tm-db"
 )
 
-// A contract crediting a frozen address (the BSC bridge wallet, consensus v13) credits nothing and marks the
-// transaction, sub envs included; crediting any other address, or the same address before the freeze, does not.
+// A contract crediting a frozen address (the BSC bridge wallet, consensus v13) credits nothing, sub envs included;
+// crediting any other address, or the same address before the freeze, works.
 func TestWasmEnvAddBalanceBlocksFrozenAddress(t *testing.T) {
 	bridge := common.HexToAddress("0x98D16d7021930b788135dD834983394fF2De9869")
 	other := common.Address{0x1}
@@ -41,31 +41,25 @@ func TestWasmEnvAddBalanceBlocksFrozenAddress(t *testing.T) {
 	e := newEnv()
 	credit(e, bridge)
 	require.Zero(t, big.NewInt(5).Cmp(e.getBalance(bridge)))
-	require.False(t, e.triedFrozenCredit())
 
-	// After the freeze: another address is credited; the bridge is not, and the transaction is marked.
+	// After the freeze: another address is credited; the bridge is not.
 	e = newEnv()
 	e.SetFrozenAddresses(map[common.Address]struct{}{bridge: {}})
 	credit(e, other)
 	require.Zero(t, big.NewInt(5).Cmp(e.getBalance(other)))
-	require.False(t, e.triedFrozenCredit())
 	credit(e, bridge)
 	require.Zero(t, e.getBalance(bridge).Sign(), "a frozen address was credited")
-	require.True(t, e.triedFrozenCredit())
 
-	// A sub env inherits the frozen set and marks the whole transaction.
-	e = newEnv()
-	e.SetFrozenAddresses(map[common.Address]struct{}{bridge: {}})
+	// A sub env inherits the frozen set.
 	sub, err := e.CreateSubEnv(common.Address{0x2}, "m", big.NewInt(0), false)
 	require.NoError(t, err)
 	credit(sub.(*WasmEnv), bridge)
 	require.Zero(t, sub.(*WasmEnv).getBalance(bridge).Sign())
-	require.True(t, e.triedFrozenCredit(), "a sub env's frozen credit must fail the transaction")
 }
 
-// A real contract sending iDNA to a frozen address: under v13 the call fails, the contract keeps the amount and the
-// address receives nothing; another recipient, or the same one before v13, is paid.
-func TestWasmTransferToFrozenAddressFailsTheCall(t *testing.T) {
+// A real contract sending iDNA to a frozen address: under v13 the call succeeds, the contract pays and the amount is
+// destroyed (the address receives nothing); another recipient, or the same one before v13, is paid.
+func TestWasmTransferToFrozenAddressDestroysTheAmount(t *testing.T) {
 	code, err := testdata.FrozenTransfer()
 	require.NoError(t, err)
 	bridge := common.HexToAddress("0x98D16d7021930b788135dD834983394fF2De9869")
@@ -75,12 +69,11 @@ func TestWasmTransferToFrozenAddressFailsTheCall(t *testing.T) {
 		name      string
 		version   config.ConsensusVerson
 		dest      common.Address
-		succeeds  bool
 		destGains bool
 	}{
-		{"v13 to the frozen address", config.ConsensusV13, bridge, false, false},
-		{"v13 to another address", config.ConsensusV13, other, true, true},
-		{"v12 to the bridge", config.ConsensusV12, bridge, true, true},
+		{"v13 to the frozen address", config.ConsensusV13, bridge, false},
+		{"v13 to another address", config.ConsensusV13, other, true},
+		{"v12 to the bridge", config.ConsensusV12, bridge, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -101,15 +94,12 @@ func TestWasmTransferToFrozenAddressFailsTheCall(t *testing.T) {
 			nonce++
 			receipt = NewWasmVM(appState, nil, createHeader(1, 1), cfg, true, nil).Run(tx, 612000000)
 
-			require.Equal(t, tc.succeeds, receipt.Success, "receipt error: %v", receipt.Error)
-			if !tc.succeeds {
-				require.ErrorIs(t, receipt.Error, ErrFrozenRecipient)
-			}
-			wantContract, wantDest := int64(1000), int64(0)
+			require.True(t, receipt.Success, "receipt error: %v", receipt.Error)
+			wantDest := int64(0)
 			if tc.destGains {
-				wantContract, wantDest = 900, 100
+				wantDest = 100
 			}
-			require.Equal(t, wantContract, appState.State.GetBalance(contract).Int64())
+			require.Equal(t, int64(900), appState.State.GetBalance(contract).Int64(), "the contract pays in every case")
 			require.Equal(t, wantDest, appState.State.GetBalance(tc.dest).Int64())
 		})
 	}

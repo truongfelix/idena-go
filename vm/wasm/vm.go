@@ -91,10 +91,6 @@ func (vm *WasmVM) Run(tx *types.Transaction, wasmGasLimit uint64) *types.TxRecei
 	case types.CallContractTx:
 		env, usedGas, actionResult, method, err = vm.call(tx, wasmGasLimit)
 	}
-	if err == nil && env.triedFrozenCredit() {
-		// Nothing of the transaction is kept: the amount a transfer took from its contract stays there.
-		err = ErrFrozenRecipient
-	}
 	var events []*types.TxEvent
 	if err == nil && vm.commitToState {
 		events = env.InternalCommit()

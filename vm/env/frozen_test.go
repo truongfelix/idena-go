@@ -15,9 +15,10 @@ import (
 	db2 "github.com/tendermint/tm-db"
 )
 
-// A contract's Send to a frozen address is refused (consensus v13), and leaves balances untouched; Send to any other
-// address still works, and before the freeze (nil set) the same transfer passes.
-func TestEnvImpSendRefusesFrozenRecipient(t *testing.T) {
+// A contract's Send to a frozen address (consensus v13) succeeds and destroys the amount: the contract pays, the
+// address receives nothing, and the gas is that of any send; Send to any other address works as before, and before
+// the freeze (nil set) the same transfer credits it.
+func TestEnvImpSendToFrozenRecipientDestroysTheAmount(t *testing.T) {
 	header := &types.Header{ProposedHeader: &types.ProposedHeader{Height: 3, Time: 21, BlockSeed: types.Seed{}}}
 	rnd := rand.New(rand.NewSource(1))
 	key, _ := crypto.GenerateKeyFromSeed(rnd)
@@ -42,13 +43,15 @@ func TestEnvImpSendRefusesFrozenRecipient(t *testing.T) {
 	require.NoError(t, e.Send(ctx, frozen, big.NewInt(40)))
 	require.Zero(t, big.NewInt(40).Cmp(e.getBalance(frozen)))
 
-	// After the freeze: refused, nothing moved.
+	gasBefore := e.gasCounter.UsedGas
+
+	// After the freeze: the contract pays, the frozen address receives nothing, the gas is the same.
 	e = newEnv()
 	e.SetFrozenAddresses(map[common.Address]struct{}{frozen: {}})
-	err := e.Send(ctx, frozen, big.NewInt(40))
-	require.EqualError(t, err, "recipient is frozen")
-	require.Zero(t, big.NewInt(100).Cmp(e.getBalance(ctx.ContractAddr())), "sender balance must be untouched")
-	require.Zero(t, big.NewInt(0).Cmp(e.getBalance(frozen)))
+	require.NoError(t, e.Send(ctx, frozen, big.NewInt(40)))
+	require.Zero(t, big.NewInt(60).Cmp(e.getBalance(ctx.ContractAddr())), "the contract must pay the amount")
+	require.Zero(t, e.getBalance(frozen).Sign(), "a frozen address was credited")
+	require.Equal(t, gasBefore, e.gasCounter.UsedGas)
 
 	// A different recipient is unaffected.
 	require.NoError(t, e.Send(ctx, other, big.NewInt(40)))
