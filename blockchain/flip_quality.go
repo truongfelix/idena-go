@@ -12,6 +12,11 @@ import (
 // quality ratio, points / flips made over its window (core/state/flip_quality.go). An empty window (a Candidate, or
 // no ceremony with flips since the fork) keeps the whole reward. The rest is never minted. Before v13 it returns
 // reward unchanged.
+//
+// It scales the block proposer's minted reward and the final committee's (blockchain.go), and the validation
+// rewards (rewards.go): staking, flips, reports, and each side of an invitation by its own recipient. At the
+// ceremony block the window already holds that ceremony's flips. Not scaled: fees and tips, the candidate reward of a
+// new identity, the foundation payouts and the zero wallet fund.
 func scaleByFlipQuality(appState *appstate.AppState, cfg *config.ConsensusConf, identity common.Address, reward *big.Int) *big.Int {
 	if !cfg.EnableUpgrade13 || reward == nil || reward.Sign() <= 0 {
 		return reward

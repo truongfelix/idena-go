@@ -6,12 +6,14 @@ import (
 
 	"github.com/idena-network/idena-go/blockchain/types"
 	"github.com/idena-network/idena-go/common"
+	"github.com/idena-network/idena-go/common/eventbus"
+	"github.com/idena-network/idena-go/common/math"
 	"github.com/idena-network/idena-go/config"
 	"github.com/idena-network/idena-go/core/appstate"
 	"github.com/idena-network/idena-go/core/state"
-	"github.com/idena-network/idena-go/common/math"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
+	db "github.com/tendermint/tm-db"
 )
 
 func TestScaleByFlipQuality(t *testing.T) {
@@ -177,4 +179,85 @@ func Test_ApplyBlockRewardsFlipQualityZeroInAPool(t *testing.T) {
 	require.Equal(t, minted.String(), new(big.Int).Sub(total(after12), total(after13)).String(), "v13 minted something with every ratio 0")
 	feePart := new(big.Int).Sub(fee, math.ToInt(decimal.NewFromBigInt(fee, 0).Mul(decimal.NewFromFloat32(chain.config.Consensus.FeeBurnRate))))
 	require.Equal(t, new(big.Int).Add(feePart, tips).String(), total(after13).String())
+}
+
+// Consensus v13: every validation reward an identity earns (staking, flips, reports, invitations, and the invitee's
+// part of an invitation) is multiplied by its recipient's own flip quality ratio; v12 pays them whole.
+func Test_rewardValidIdentitiesScaledByFlipQuality(t *testing.T) {
+	// ratios: a 0, b 1/2, c none (whole), d 1; invitees: ia 0, ib 1/2, ic and id none
+	a, b, c, d := common.Address{0xa}, common.Address{0xb}, common.Address{0xc}, common.Address{0xd}
+	ia, ib, ic, id := common.Address{0x1a}, common.Address{0x1b}, common.Address{0x1c}, common.Address{0x1d}
+	windows := map[common.Address][2]uint32{a: {3, 0}, b: {2, 2}, d: {2, 4}, ia: {1, 0}, ib: {2, 2}}
+	authors := []common.Address{a, b, c, d}
+	invitees := map[common.Address]common.Address{a: ia, b: ib, c: ic, d: id}
+
+	all := append(append([]common.Address{}, authors...), ia, ib, ic, id)
+	holdings := func(s *appstate.AppState, addr common.Address) *big.Int {
+		res := new(big.Int).Set(s.State.GetBalance(addr))
+		if stake := s.State.GetStakeBalance(addr); stake != nil {
+			res.Add(res, stake)
+		}
+		return res
+	}
+	run := func(v13 bool) map[common.Address]*big.Int {
+		cfg := *config.ConsensusVersions[config.ConsensusV12]
+		cfg.EnableUpgrade13 = v13
+		appState, _ := appstate.NewAppState(db.NewMemDB(), eventbus.New())
+		require.NoError(t, appState.Initialize(0))
+		appState.State.SetGlobalEpoch(5)
+		appState.State.SetGodAddress(common.Address{0x1})
+		for i, addr := range authors {
+			appState.State.SetState(addr, state.Verified)
+			appState.State.SetBirthday(addr, 1)
+			appState.State.AddStake(addr, ConvertToInt(decimal.NewFromInt(int64(100*(i+1)))))
+			appState.State.SetState(invitees[addr], state.Newbie)
+			appState.State.SetBirthday(invitees[addr], 4)
+		}
+		for addr, w := range windows {
+			appState.State.AddFlipQuality(addr, w[0], w[1])
+		}
+		require.NoError(t, appState.Commit(nil))
+		before := map[common.Address]*big.Int{}
+		for _, addr := range all {
+			before[addr] = holdings(appState, addr)
+		}
+
+		results := &types.ValidationResults{
+			GoodAuthors:             map[common.Address]*types.ValidationResult{},
+			GoodInviters:            map[common.Address]*types.InviterValidationResult{},
+			ReportersToRewardByFlip: map[int]map[common.Address]*types.Candidate{0: {}},
+		}
+		for _, addr := range authors {
+			results.GoodAuthors[addr] = &types.ValidationResult{NewIdentityState: uint8(state.Verified), FlipsToReward: []*types.FlipToReward{
+				flipToReward([]byte{addr[0]}, types.GradeNone, decimal.NewFromFloat32(4.5))}}
+			results.GoodInviters[addr] = &types.InviterValidationResult{PayInvitationReward: true, NewIdentityState: uint8(state.Verified),
+				SuccessfulInvites: []*types.SuccessfulInvite{successfulInvite(1, 50, false, invitees[addr])}}
+			results.ReportersToRewardByFlip[0][addr] = &types.Candidate{Address: addr, NewIdentityState: uint8(state.Verified)}
+		}
+		rewardValidIdentities(appState, &cfg, map[common.ShardId]*types.ValidationResults{1: results}, []uint32{100},
+			map[common.Address]*big.Int{}, nil)
+		credits := map[common.Address]*big.Int{}
+		for _, addr := range all {
+			credits[addr] = new(big.Int).Sub(holdings(appState, addr), before[addr])
+		}
+		return credits
+	}
+	credits12, credits13 := run(false), run(true)
+
+	for _, addr := range all {
+		r12, r13 := credits12[addr], credits13[addr]
+		require.Positive(t, r12.Sign(), "%v earned nothing under v12: the test checks nothing for it", addr)
+		w, ok := windows[addr]
+		switch {
+		case !ok || w[1] == 2*w[0]:
+			require.Equal(t, r12.String(), r13.String(), "%v must be paid whole", addr)
+		case w[1] == 0:
+			require.Zero(t, r13.Sign(), "%v has ratio 0 and was paid %v", addr, r13)
+		default:
+			// ratio 1/2 over several rewards, each rounded down
+			half := new(big.Int).Quo(r12, big.NewInt(2))
+			diff := new(big.Int).Sub(half, r13)
+			require.True(t, diff.Sign() >= 0 && diff.Cmp(big.NewInt(5)) <= 0, "%v: v13 %v, v12 %v", addr, r13, r12)
+		}
+	}
 }
