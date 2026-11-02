@@ -37,6 +37,7 @@ message ProtoBlockHeader {
         uint32 upgrade = 14;
         bytes seedProof = 15;
         bytes receiptsCid = 16;
+        bytes identityListCid = 17;
     }
 
     message Empty {
@@ -47,6 +48,7 @@ message ProtoBlockHeader {
         int64 timestamp = 5;
         bytes blockSeed = 6;
         uint32 flags = 7;
+        bytes identityListCid = 8;
     }
 
     Proposed proposedHeader = 1;

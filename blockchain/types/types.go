@@ -109,6 +109,8 @@ type EmptyBlockHeader struct {
 	BlockSeed    Seed
 	Time         int64
 	Flags        BlockFlag
+	// IdentityListCid: as in ProposedHeader.
+	IdentityListCid []byte
 }
 
 type ProposedHeader struct {
@@ -128,6 +130,9 @@ type ProposedHeader struct {
 	Upgrade        uint32
 	SeedProof      []byte
 	TxReceiptsCid  []byte
+	// IdentityListCid is the CID of the index of the identity list after this block (consensus v13: list blocks
+	// only, empty otherwise).
+	IdentityListCid []byte
 }
 
 type Header struct {
@@ -515,6 +520,8 @@ func (h *Header) FromProto(protoHeader *models.ProtoBlockHeader) *Header {
 			BlockSeed:    BytesToSeed(protoHeader.EmptyHeader.BlockSeed),
 			Time:         protoHeader.EmptyHeader.Timestamp,
 			Flags:        BlockFlag(protoHeader.EmptyHeader.Flags),
+
+			IdentityListCid: protoHeader.EmptyHeader.IdentityListCid,
 		}
 		h.EmptyBlockHeader = empty
 	}
@@ -535,6 +542,8 @@ func (h *Header) FromProto(protoHeader *models.ProtoBlockHeader) *Header {
 			Upgrade:        protoHeader.ProposedHeader.Upgrade,
 			SeedProof:      protoHeader.ProposedHeader.SeedProof,
 			TxReceiptsCid:  protoHeader.ProposedHeader.ReceiptsCid,
+
+			IdentityListCid: protoHeader.ProposedHeader.IdentityListCid,
 		}
 		if len(protoHeader.ProposedHeader.OfflineAddr) > 0 {
 			addr := common.BytesToAddress(protoHeader.ProposedHeader.OfflineAddr)
@@ -590,6 +599,18 @@ func (h *Header) Root() common.Hash {
 	} else {
 		return h.ProposedHeader.Root
 	}
+}
+
+// IdentityListCid is the CID of the identity list's index after this block, empty when the block has none.
+func (h *Header) IdentityListCid() []byte {
+	if h.EmptyBlockHeader != nil {
+		return h.EmptyBlockHeader.IdentityListCid
+	}
+	return h.ProposedHeader.IdentityListCid
+}
+
+func (b *Block) IdentityListCid() []byte {
+	return b.Header.IdentityListCid()
 }
 
 func (h *Header) IdentityRoot() common.Hash {
@@ -673,6 +694,8 @@ func (h *ProposedHeader) ToProto() *models.ProtoBlockHeader_Proposed {
 		Upgrade:        h.Upgrade,
 		SeedProof:      h.SeedProof,
 		ReceiptsCid:    h.TxReceiptsCid,
+
+		IdentityListCid: h.IdentityListCid,
 	}
 	if h.OfflineAddr != nil {
 		protoProposed.OfflineAddr = (*h.OfflineAddr)[:]
@@ -694,6 +717,8 @@ func (h *EmptyBlockHeader) ToProto() *models.ProtoBlockHeader_Empty {
 		Timestamp:    h.Time,
 		BlockSeed:    h.BlockSeed[:],
 		Flags:        uint32(h.Flags),
+
+		IdentityListCid: h.IdentityListCid,
 	}
 	return protoEmpty
 }

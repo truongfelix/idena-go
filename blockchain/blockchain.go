@@ -23,6 +23,7 @@ import (
 	"github.com/idena-network/idena-go/common/math"
 	"github.com/idena-network/idena-go/config"
 	"github.com/idena-network/idena-go/core/appstate"
+	"github.com/idena-network/idena-go/core/identitylist"
 	"github.com/idena-network/idena-go/core/mempool"
 	"github.com/idena-network/idena-go/core/state"
 	"github.com/idena-network/idena-go/core/state/snapshot"
@@ -124,6 +125,7 @@ type blockInsertionResult struct {
 	identityStateDiff *state.IdentityStateDiff
 	txReceipts        types.TxReceipts
 	txTasks           []task
+	identityList      *identitylist.List
 }
 
 type identityUpdateHookCtx struct {
@@ -425,7 +427,9 @@ func (chain *Blockchain) generateEmptyBlock(checkState *appstate.AppState, prevB
 
 	block.Header.EmptyBlockHeader.Root = checkState.State.Root()
 	block.Header.EmptyBlockHeader.IdentityRoot = checkState.IdentityState.Root()
-	return block, &blockInsertionResult{stateDiff: stateDiff, identityStateDiff: identityStateDiff}
+	identityList := chain.buildIdentityList(checkState, block)
+	block.Header.EmptyBlockHeader.IdentityListCid = identityListCidBytes(identityList)
+	return block, &blockInsertionResult{stateDiff: stateDiff, identityStateDiff: identityStateDiff, identityList: identityList}
 }
 
 func (chain *Blockchain) GenerateEmptyBlock() *types.Block {
@@ -2131,6 +2135,7 @@ func (chain *Blockchain) ProposeBlock(proof []byte) *types.BlockProposal {
 	}
 
 	block.Header.ProposedHeader.Root, block.Header.ProposedHeader.IdentityRoot, _, _ = chain.applyBlockOnState(checkState, block, totalFee, totalTips, usedGas, blockRewardCtx, nil)
+	block.Header.ProposedHeader.IdentityListCid = identityListCidBytes(chain.buildIdentityList(checkState, block))
 
 	proposal := &types.BlockProposal{Block: block, Proof: proof}
 	hash := crypto.SignatureHash(proposal)
@@ -2451,6 +2456,10 @@ func (chain *Blockchain) validateBlock(checkState *appstate.AppState, block *typ
 	if root, identityRoot, stateDiff, identityStateDiff = chain.applyBlockOnState(checkState, block, totalFee, totalTips, usedGas, blockRewardCtx, statsCollector); root != block.Root() || identityRoot != block.IdentityRoot() {
 		return nil, errors.Errorf("invalid block roots. Expected=%x & %x, actual=%x & %x", root, identityRoot, block.Root(), block.IdentityRoot())
 	}
+	identityList := chain.buildIdentityList(checkState, block)
+	if err := validateIdentityListCid(identityList, block); err != nil {
+		return nil, err
+	}
 
 	cid, _ := chain.ipfs.Cid(block.Body.ToBytes())
 
@@ -2472,7 +2481,7 @@ func (chain *Blockchain) validateBlock(checkState *appstate.AppState, block *typ
 	if bytes.Compare(receiptCidBytes, block.Header.ProposedHeader.TxReceiptsCid) != 0 {
 		return nil, errors.New("invalid receipt cid")
 	}
-	return &blockInsertionResult{stateDiff: stateDiff, identityStateDiff: identityStateDiff, txReceipts: receipts, txTasks: tasks}, nil
+	return &blockInsertionResult{stateDiff: stateDiff, identityStateDiff: identityStateDiff, txReceipts: receipts, txTasks: tasks, identityList: identityList}, nil
 }
 
 func (chain *Blockchain) ValidateBlockCertOnHead(block *types.Header, cert *types.BlockCert) error {
