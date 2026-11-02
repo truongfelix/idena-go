@@ -1,6 +1,7 @@
 package validation
 
 import (
+	"crypto/ecdsa"
 	"math/big"
 	"testing"
 
@@ -90,4 +91,41 @@ func TestConsensusV13FreezesTheBridgeWalletOnly(t *testing.T) {
 	upgraded := *v12
 	config.ApplyConsensusVersion(config.ConsensusV13, &upgraded)
 	require.True(t, upgraded.IsFrozenAddress(bridge))
+}
+
+// Every transaction type is refused from a frozen address, and to one, whatever its own rules: the check runs before
+// the type's validator. The loop covers each registered type, so a new type is covered too.
+func TestValidateTxRefusesFrozenAddressesForEveryTxType(t *testing.T) {
+	defer SetAppConfig(nil)
+
+	frozenKey, _ := crypto.GenerateKey()
+	frozenSender := crypto.PubkeyToAddress(frozenKey.PublicKey)
+	otherKey, _ := crypto.GenerateKey()
+	frozenRecipient := common.Address{0x7}
+
+	appState, _ := appstate.NewAppState(db.NewMemDB(), eventbus.New())
+	require.NoError(t, appState.Initialize(0))
+	cfg := &config.ConsensusConf{EnableUpgrade10: true, EnableUpgrade11: true, EnableUpgrade12: true, EnableUpgrade13: true,
+		FrozenAddresses: map[common.Address]struct{}{frozenSender: {}, frozenRecipient: {}}}
+	SetAppConfig(&config.Config{Consensus: cfg})
+
+	require.NotEmpty(t, validators)
+	for txType := range validators {
+		for _, tc := range []struct {
+			name string
+			key  *ecdsa.PrivateKey
+			to   *common.Address
+		}{
+			{"from a frozen address", frozenKey, nil},
+			{"from a frozen address to another", frozenKey, &common.Address{0x8}},
+			{"to a frozen address", otherKey, &frozenRecipient},
+		} {
+			tx, err := types.SignTx(&types.Transaction{AccountNonce: 1, Type: txType, To: tc.to, Amount: big.NewInt(0),
+				MaxFee: big.NewInt(0)}, tc.key)
+			require.NoError(t, err)
+			for _, inBlock := range []TxType{MempoolTx, InBlockTx} {
+				require.ErrorIs(t, ValidateTx(appState, tx, big.NewInt(0), inBlock), FrozenAddress, "type %d %s", txType, tc.name)
+			}
+		}
+	}
 }
