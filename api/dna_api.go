@@ -325,7 +325,8 @@ type Identity struct {
 	PenaltySeconds      uint16          `json:"penaltySeconds"`
 	DiscriminationFlags []string        `json:"discriminationFlags"`
 	// FlipQualityFlips and FlipQualityPoints are the v13 window of the identity's own flips summed (its last 10
-	// ceremonies with flips): mining rewards scale by points / flips, whole while flips is 0.
+	// ceremonies with flips): its minted rewards, mining and validation (staking, flips, reports, invitations), scale by
+	// points / flips, whole while flips is 0.
 	FlipQualityFlips  uint32  `json:"flipQualityFlips"`
 	FlipQualityPoints float32 `json:"flipQualityPoints"`
 }

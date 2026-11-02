@@ -156,7 +156,7 @@ def decode_page(data):
             "penaltySeconds": penalty_seconds, "penaltyTimestamp": penalty_timestamp,
             "qualifiedFlips": qualified_flips, "shortFlipPoints": Decimal(short_points) / 2,
             "scores": scores.hex(),
-            # v13 flip quality window: rewards scale by points / flips (whole while flips is 0)
+            # v13 flip quality window: minted rewards (mining and validation) scale by points / flips (whole while flips is 0)
             "flipQualityFlips": fq_flips, "flipQualityPoints": Decimal(fq_points) / 2,
         })
     return rows

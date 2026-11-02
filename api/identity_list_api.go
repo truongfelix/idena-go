@@ -31,7 +31,8 @@ type IdentityListItem struct {
 	QualifiedFlips   uint32          `json:"qualifiedFlips"`
 	ShortFlipPoints  float32         `json:"shortFlipPoints"`
 	Scores           hexutil.Bytes   `json:"scores"`
-	// FlipQualityFlips and FlipQualityPoints are the v13 window summed: mining rewards scale by points / flips.
+	// FlipQualityFlips and FlipQualityPoints are the v13 window summed: minted rewards, mining and validation, scale by
+	// points / flips.
 	FlipQualityFlips  uint32  `json:"flipQualityFlips"`
 	FlipQualityPoints float32 `json:"flipQualityPoints"`
 }

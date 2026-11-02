@@ -12,8 +12,9 @@
 //	       scores (common.LastScoresCount bytes, zero-padded) | flip quality: flips made (2) |
 //	       flip quality: points x2 (2)
 //
-// The flip quality counts are the identity's v13 window summed (state.Identity.FlipQuality): its mining rewards are
-// scaled by points / flips made, or kept whole while it has none. Version 1 (no flip quality) was never released.
+// The flip quality counts are the identity's v13 window summed (state.Identity.FlipQuality): its minted rewards
+// (mining and validation, blockchain/flip_quality.go) are scaled by points / flips made, or kept whole while it has
+// none. Version 1 (no flip quality) was never released.
 //
 // A page holds at most PageSize rows, so it stays under the 256 KiB a single raw IPFS block holds: its CID is the
 // CIDv1 raw SHA2-256 of its bytes, which is also what the node's IPFS Add returns for it.
