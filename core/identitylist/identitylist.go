@@ -90,16 +90,9 @@ func RowFromIdentity(addr common.Address, identity state.Identity) Row {
 		Scores:           identity.Scores,
 	}
 	flips, points2 := identity.FlipQuality()
-	r.FlipQualityFlips, r.FlipQualityPoints = clampUint16(flips), clampUint16(points2)
+	// the sums stay below state.MaxFlipQualityPoints2 (2,540), far within 2 bytes
+	r.FlipQualityFlips, r.FlipQualityPoints = uint16(flips), uint16(points2)
 	return r
-}
-
-// clampUint16 bounds a window sum, which the state keeps far below 2^16 (10 ceremonies of at most 127 flips).
-func clampUint16(v uint32) uint16 {
-	if v > 0xffff {
-		return 0xffff
-	}
-	return uint16(v)
 }
 
 // List is a built list: its pages and its index, with their CIDs.

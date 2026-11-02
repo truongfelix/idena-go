@@ -28,6 +28,13 @@ func sumFlipQuality(window []byte) (flips, points2 uint32) {
 	return flips, points2
 }
 
+// MaxFlipQualityFlips and MaxFlipQualityPoints2 bound a window's sums: FlipQualityCeremonies pairs of at most
+// maxFlipQualityFlips flips and twice as many points x2 (1,270 and 2,540).
+const (
+	MaxFlipQualityFlips   = FlipQualityCeremonies * maxFlipQualityFlips
+	MaxFlipQualityPoints2 = 2 * MaxFlipQualityFlips
+)
+
 // appendFlipQuality adds one ceremony's pair to a window and drops the oldest pairs beyond FlipQualityCeremonies.
 // A ceremony without flips adds nothing. points2 is capped at twice the flips.
 func appendFlipQuality(window []byte, flips, points2 uint32) []byte {
@@ -50,15 +57,16 @@ func appendFlipQuality(window []byte, flips, points2 uint32) []byte {
 }
 
 func (s *stateIdentity) AddFlipQuality(flips, points2 uint32) {
-	if flips == 0 {
-		return
-	}
 	s.data.flipQuality = appendFlipQuality(s.data.flipQuality, flips, points2)
 	s.touch()
 }
 
-// AddFlipQuality records one ceremony's result of addr's own flips in its v13 window.
+// AddFlipQuality records one ceremony's result of addr's own flips in its v13 window; a ceremony without flips
+// changes nothing (no record is read).
 func (s *StateDB) AddFlipQuality(addr common.Address, flips, points2 uint32) {
+	if flips == 0 {
+		return
+	}
 	s.GetOrNewIdentityObject(addr).AddFlipQuality(flips, points2)
 }
 

@@ -95,15 +95,17 @@ func applyRewardsWith(t *testing.T, chain *TestBlockchain, v13 bool, fee, tips *
 	return appState, ctx, burns
 }
 
-func credited(before, after *appstate.AppState, addr common.Address) *big.Int {
-	sum := func(s *appstate.AppState) *big.Int {
-		res := new(big.Int).Set(s.State.GetBalance(addr))
-		if stake := s.State.GetStakeBalance(addr); stake != nil {
-			res.Add(res, stake)
-		}
-		return res
+// holdings is addr's balance plus stake.
+func holdings(s *appstate.AppState, addr common.Address) *big.Int {
+	res := new(big.Int).Set(s.State.GetBalance(addr))
+	if stake := s.State.GetStakeBalance(addr); stake != nil {
+		res.Add(res, stake)
 	}
-	return new(big.Int).Sub(sum(after), sum(before))
+	return res
+}
+
+func credited(before, after *appstate.AppState, addr common.Address) *big.Int {
+	return new(big.Int).Sub(holdings(after, addr), holdings(before, addr))
 }
 
 // Consensus v13: the proposer's minted reward and each committee member's reward are multiplied by that identity's
@@ -231,13 +233,6 @@ func Test_rewardValidIdentitiesScaledByFlipQuality(t *testing.T) {
 	invitees := map[common.Address]common.Address{a: ia, b: ib, c: ic, d: id}
 
 	all := append(append([]common.Address{}, authors...), ia, ib, ic, id)
-	holdings := func(s *appstate.AppState, addr common.Address) *big.Int {
-		res := new(big.Int).Set(s.State.GetBalance(addr))
-		if stake := s.State.GetStakeBalance(addr); stake != nil {
-			res.Add(res, stake)
-		}
-		return res
-	}
 	burnsBy := map[bool]*burnRecorder{false: newBurnRecorder(), true: newBurnRecorder()}
 	run := func(v13 bool) map[common.Address]*big.Int {
 		cfg := *config.ConsensusVersions[config.ConsensusV12]

@@ -25,6 +25,17 @@ func TestAppendFlipQualityKeepsTheLastTenCeremoniesWithFlips(t *testing.T) {
 	require.Equal(t, []byte{maxFlipQualityFlips, 2 * maxFlipQualityFlips}, w)
 }
 
+func TestFlipQualitySumsStayWithinTheirBounds(t *testing.T) {
+	var w []byte
+	for i := 0; i < 2*FlipQualityCeremonies; i++ {
+		w = appendFlipQuality(w, 1000, 2000)
+	}
+	flips, points2 := sumFlipQuality(w)
+	require.Equal(t, uint32(MaxFlipQualityFlips), flips)
+	require.Equal(t, uint32(MaxFlipQualityPoints2), points2)
+	require.Less(t, MaxFlipQualityPoints2, 1<<16, "the identity list writes the sums in 2 bytes")
+}
+
 func TestAppendFlipQualityDoesNotShareTheOldWindow(t *testing.T) {
 	backing := []byte{2, 2, 0, 0}
 	_ = appendFlipQuality(backing[:2], 3, 3)
