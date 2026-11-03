@@ -278,7 +278,7 @@ func TestIpfsProxy_BitswapStateNamesWhatBitswapSees(t *testing.T) {
 		require.True(t, ok, "field %d is a name", i)
 		names[name] = true
 	}
-	for _, name := range []string{"bitswapPeers", "wants", "bitswapMessages", "blocksReceived"} {
+	for _, name := range []string{"wants", "bitswapMessages", "blocksReceived", "bitswapLedgerPeers"} {
 		require.True(t, names[name], "the failed read's log names %s: %v", name, fields)
 	}
 	require.False(t, names["bitswapStatErr"], "%v", fields)
