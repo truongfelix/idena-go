@@ -14,6 +14,7 @@ import (
 	"github.com/idena-network/idena-go/common/eventbus"
 	"github.com/idena-network/idena-go/config"
 	ipfsConf "github.com/ipfs/kubo/config"
+	"github.com/ipfs/kubo/core"
 	"github.com/ipfs/kubo/repo/fsrepo"
 	"github.com/stretchr/testify/require"
 )
@@ -267,4 +268,23 @@ func TestIpfsProxy_Get_Limit(t *testing.T) {
 	require.Equal(TooBigErr, err)
 	_, err = proxy.Get(cid.Bytes(), Block)
 	require.NoError(err)
+}
+
+func TestIpfsProxy_BitswapStateNamesWhatBitswapSees(t *testing.T) {
+	fields := proxy.(*ipfsProxy).bitswapState()
+	names := map[string]bool{}
+	for i := 0; i+1 < len(fields); i += 2 {
+		name, ok := fields[i].(string)
+		require.True(t, ok, "field %d is a name", i)
+		names[name] = true
+	}
+	for _, name := range []string{"bitswapPeers", "wants", "bitswapMessages", "blocksReceived"} {
+		require.True(t, names[name], "the failed read's log names %s: %v", name, fields)
+	}
+	require.False(t, names["bitswapStatErr"], "%v", fields)
+}
+
+func TestIpfsProxy_BitswapStateWithoutBitswap(t *testing.T) {
+	p := &ipfsProxy{node: &core.IpfsNode{}}
+	require.Empty(t, p.bitswapState())
 }

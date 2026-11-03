@@ -111,7 +111,6 @@ type ipfsProxy struct {
 	lastPeersUpdatedTime time.Time
 	bus                  eventbus.Bus
 	gcMutex              sync.RWMutex
-	readStall            readStall
 }
 
 func (p *ipfsProxy) Host() libp2pcore.Host {
@@ -416,6 +415,26 @@ func (p *ipfsProxy) GetWithSizeLimit(key []byte, dataType DataType, maxSize int6
 	return p.get(path.FromCid(c), dataType, maxSize)
 }
 
+// bitswapState is what bitswap itself sees, as log fields: the peers its server side counts, its wantlist, and
+// the messages (any peer's, wants included) and blocks it received since the start. A read that times out while
+// the swarm has peers and these stay still points at bitswap rather than at the data.
+func (p *ipfsProxy) bitswapState() []interface{} {
+	bs := p.node.Bitswap
+	if bs == nil {
+		return nil
+	}
+	st, err := bs.Stat()
+	var fields []interface{}
+	if st != nil {
+		fields = append(fields, "bitswapPeers", len(st.Peers), "wants", len(st.Wantlist),
+			"bitswapMessages", st.MessagesReceived, "blocksReceived", st.BlocksReceived)
+	}
+	if err != nil {
+		fields = append(fields, "bitswapStatErr", err)
+	}
+	return fields
+}
+
 func (p *ipfsProxy) get(path path.Path, dataType DataType, maxSize int64) ([]byte, error) {
 	p.rwLock.RLock()
 	defer p.rwLock.RUnlock()
@@ -427,35 +446,18 @@ func (p *ipfsProxy) get(path path.Path, dataType DataType, maxSize int64) ([]byt
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
 	defer cancel()
 	f, err := api.Unixfs().Get(ctx, path)
-	timedOut := false
 	select {
 	case <-ctx.Done():
 		err = errors.New("timeout while reading data from ipfs")
-		timedOut = true
 	default:
 		break
 	}
 	if err != nil {
 		info, _ := api.Swarm().Peers(context.Background())
-		fields := []interface{}{"cid", path.String(), "err", err, "peers", len(info)}
-		// What bitswap itself sees (B-196): the peers it counts, what it still wants, what it ever received.
-		var messages uint64
-		if bs := p.node.Bitswap; bs != nil {
-			if st, statErr := bs.Stat(); st != nil {
-				messages = st.MessagesReceived
-				fields = append(fields, "bitswapPeers", len(st.Peers), "wants", len(st.Wantlist),
-					"bitswapMessages", st.MessagesReceived, "blocksReceived", st.BlocksReceived)
-			} else if statErr != nil {
-				fields = append(fields, "bitswapStatErr", statErr)
-			}
-		}
-		p.log.Error("fail to read from ipfs", fields...)
-		if timedOut && p.node.Bitswap != nil && p.readStall.timeout(time.Now(), len(info), messages) {
-			go redialPeers(p.node.PeerHost, p.log)
-		}
+		p.log.Error("fail to read from ipfs", append([]interface{}{"cid", path.String(), "err", err, "peers", len(info)},
+			p.bitswapState()...)...)
 		return nil, err
 	}
-	p.readStall.success()
 	file := files.ToFile(f)
 	defer file.Close()
 
@@ -482,6 +484,9 @@ func (p *ipfsProxy) get(path path.Path, dataType DataType, maxSize int64) ([]byt
 	_, err = buf.ReadFrom(file)
 
 	if err != nil {
+		// The root was found but a later block was not (a body over several blocks).
+		p.log.Error("fail to read from ipfs", append([]interface{}{"cid", path.String(), "err", err},
+			p.bitswapState()...)...)
 		return nil, err
 	}
 	p.log.Debug("read data from ipfs", "cid", path.String())
