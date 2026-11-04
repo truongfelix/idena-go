@@ -102,6 +102,8 @@ type Block struct {
 	Flags        []string        `json:"flags"`
 	IsEmpty      bool            `json:"isEmpty"`
 	OfflineAddr  *common.Address `json:"offlineAddress"`
+	// IdentityListCid is the CID of the identity list's index the block carries (consensus v13), nil otherwise.
+	IdentityListCid *string `json:"identityListCid,omitempty"`
 }
 
 type Transaction struct {
@@ -744,6 +746,14 @@ func convertToBlock(block *types.Block) *Block {
 		ipfsHashStr = &stringCid
 	}
 
+	var identityListCid *string
+	if b := block.Header.IdentityListCid(); len(b) > 0 {
+		if c, err := cid.Cast(b); err == nil {
+			s := c.String()
+			identityListCid = &s
+		}
+	}
+
 	var flags []string
 	if block.Header.Flags().HasFlag(types.IdentityUpdate) {
 		flags = append(flags, "IdentityUpdate")
@@ -791,6 +801,8 @@ func convertToBlock(block *types.Block) *Block {
 		Transactions: txs,
 		Flags:        flags,
 		OfflineAddr:  block.Header.OfflineAddr(),
+
+		IdentityListCid: identityListCid,
 	}
 }
 

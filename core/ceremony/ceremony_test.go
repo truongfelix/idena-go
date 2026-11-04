@@ -1069,6 +1069,39 @@ func Test_applyOnState(t *testing.T) {
 	require.Nil(t, identity.Delegatee())
 }
 
+// Consensus v13: a Newbie delegated to a frozen pool that becomes Verified gets its stake transfer itself; the pool
+// receives nothing.
+func Test_applyOnStateFrozenDelegatee(t *testing.T) {
+	db := dbm.NewMemDB()
+	appstate, _ := appstate.NewAppState(db, eventbus.New())
+
+	addr1 := common.Address{0x1}
+	delegatee := common.Address{0x2}
+	appstate.State.SetState(addr1, state.Newbie)
+	appstate.State.AddStake(addr1, big.NewInt(100))
+	appstate.State.AddStake(addr1, big.NewInt(40))
+	appstate.State.AddReplenishedStake(addr1, big.NewInt(40))
+	appstate.State.AddBalance(addr1, big.NewInt(10))
+	appstate.State.SetDelegatee(addr1, delegatee)
+
+	cfg := blockchain.GetDefaultConsensusConfig()
+	config.ApplyConsensusVersion(config.ConsensusV13, cfg)
+	cfg.FrozenAddresses = map[common.Address]struct{}{delegatee: {}}
+	state.SetFrozenAddressCheck(cfg.IsFrozenAddress)
+	defer state.SetFrozenAddressCheck(nil)
+
+	validated, _, _ := applyOnState(cfg, appstate, 0, collector.NewStatsCollector(), addr1, cacheValue{
+		prevState: state.Newbie,
+		birthday:  3,
+		state:     state.Verified,
+		delegatee: &delegatee,
+	})
+	require.True(t, validated)
+	require.Zero(t, appstate.State.GetBalance(delegatee).Sign(), "the frozen pool was paid")
+	require.True(t, appstate.State.GetBalance(addr1).Cmp(big.NewInt(85)) == 0, "addr1 balance %v, want 10 + 75", appstate.State.GetBalance(addr1))
+	require.True(t, appstate.State.GetStakeBalance(addr1).Cmp(big.NewInt(65)) == 0)
+}
+
 func Test_applyOnState_saveStake(t *testing.T) {
 	db := dbm.NewMemDB()
 	appState, _ := appstate.NewAppState(db, eventbus.New())

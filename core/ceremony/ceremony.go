@@ -108,6 +108,8 @@ type cacheValue struct {
 	missed                   bool
 	participated             bool
 	delegatee                *common.Address
+	// flipQuality is the result of the identity's own flips in this ceremony, recorded under v13 only.
+	flipQuality authorFlipQuality
 }
 
 type lottery struct {
@@ -971,6 +973,9 @@ func applyOnState(cfg *config.ConsensusConf, appState *appstate.AppState, curren
 	if !value.missed {
 		appState.State.AddNewScore(addr, common.EncodeScore(value.shortFlipPoint, value.shortQualifiedFlipsCount))
 	}
+	if cfg.EnableUpgrade13 {
+		appState.State.AddFlipQuality(addr, value.flipQuality.flips, value.flipQuality.points2)
+	}
 	appState.State.SetBirthday(addr, value.birthday)
 
 	if value.state.NewbieOrBetter() && (value.prevState == state.Suspended || value.prevState == state.Zombie || value.prevState == state.Candidate) && value.delegatee != nil {
@@ -994,10 +999,7 @@ func applyOnState(cfg *config.ConsensusConf, appState *appstate.AppState, curren
 	if value.state == state.Verified && value.prevState == state.Newbie {
 		earnedStake := new(big.Int).Sub(appState.State.GetStakeBalance(addr), appState.State.GetReplenishedStakeBalance(addr))
 		addToBalance := math.ToInt(decimal.NewFromBigInt(earnedStake, 0).Mul(decimal.NewFromFloat(common.StakeToBalanceCoef)))
-		addTo := addr
-		if value.delegatee != nil {
-			addTo = *value.delegatee
-		}
+		addTo := cfg.RewardDest(addr, value.delegatee)
 		collector.BeginVerifiedStakeTransferBalanceUpdate(statsCollector, addr, addTo, appState)
 		appState.State.AddBalance(addTo, addToBalance)
 		appState.State.SubStake(addr, addToBalance)
@@ -1115,6 +1117,11 @@ func (vc *ValidationCeremony) ApplyNewEpoch(height uint64, appState *appstate.Ap
 
 		vc.logInfoWithInteraction("Approved candidates", "shardId", shardId, "cnt", len(approvedCandidates))
 
+		// Computed under every version (it writes nothing): the result is kept in epochApplyingCache by height, and
+		// applyOnState alone decides by the version in force when it is applied, so a value cached before an upgrade
+		// that a fork switch then activates is still whole.
+		authorsFlipQuality := flipQualityByAuthor(flipQualification, flipsByAuthor)
+
 		notApprovedFlips := vc.getNotApprovedFlips(approvedCandidatesSet, shardId)
 
 		for idx, candidate := range shard.candidates {
@@ -1169,6 +1176,7 @@ func (vc *ValidationCeremony) ApplyNewEpoch(height uint64, appState *appstate.Ap
 				missed:                   missed,
 				participated:             participated,
 				delegatee:                identity.Delegatee(),
+				flipQuality:              authorsFlipQuality[addr],
 			}
 
 			epochApplyingValues[addr] = value

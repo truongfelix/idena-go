@@ -63,6 +63,9 @@ type EnvImp struct {
 	droppedContracts      map[common.Address]struct{}
 	events                []*types.TxEvent
 	contractStakeCache    map[common.Address]*big.Int
+	// frozen addresses are never credited by a contract (consensus v13): what a contract sends them is destroyed.
+	// nil before v13.
+	frozen map[common.Address]struct{}
 }
 
 func NewEnvImp(s *appstate.AppState, block *types.Header, gasCounter *GasCounter, statsCollector collector.StatsCollector) *EnvImp {
@@ -75,6 +78,12 @@ func NewEnvImp(s *appstate.AppState, block *types.Header, gasCounter *GasCounter
 		contractStakeCache:    map[common.Address]*big.Int{},
 		statsCollector:        statsCollector,
 	}
+}
+
+// SetFrozenAddresses sets the addresses no contract may send to (consensus v13). The production VM sets it from the
+// running consensus config; a nil map (tests, pre-v13) blocks nothing.
+func (e *EnvImp) SetFrozenAddresses(frozen map[common.Address]struct{}) {
+	e.frozen = frozen
 }
 
 func (e *EnvImp) Epoch() uint16 {
@@ -113,7 +122,10 @@ func (e *EnvImp) Send(ctx CallContext, dest common.Address, amount *big.Int) err
 		return errors.New("value must be non-negative")
 	}
 	e.subBalance(ctx.ContractAddr(), amount)
-	e.addBalance(dest, amount)
+	if _, ok := e.frozen[dest]; !ok {
+		e.addBalance(dest, amount)
+	}
+	// else destroyed: the contract goes on, the frozen address receives nothing (consensus v13, owner 2026-11-02).
 
 	e.gasCounter.AddGas(costs.MoveBalanceGas)
 	return nil
@@ -272,7 +284,10 @@ func (e *EnvImp) Terminate(ctx CallContext, keysToSave [][]byte, dest common.Add
 		return
 	}
 	refund := big.NewInt(0).Quo(stake, big.NewInt(2))
-	e.addBalance(dest, refund)
+	if _, ok := e.frozen[dest]; !ok {
+		// A refund to a frozen address is destroyed with the other half (consensus v13).
+		e.addBalance(dest, refund)
+	}
 	e.droppedContracts[ctx.ContractAddr()] = struct{}{}
 
 	e.Iterate(ctx, nil, nil, func(key []byte, value []byte) (stopped bool) {

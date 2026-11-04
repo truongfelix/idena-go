@@ -23,6 +23,7 @@ import (
 	"github.com/idena-network/idena-go/common/math"
 	"github.com/idena-network/idena-go/config"
 	"github.com/idena-network/idena-go/core/appstate"
+	"github.com/idena-network/idena-go/core/identitylist"
 	"github.com/idena-network/idena-go/core/mempool"
 	"github.com/idena-network/idena-go/core/state"
 	"github.com/idena-network/idena-go/core/state/snapshot"
@@ -91,6 +92,7 @@ type Blockchain struct {
 	headShards      headShardsCache
 	ipfsLoadQueue   chan *attachments.StoreToIpfsAttachment
 	middlewares     []Middleware
+	identityLists   *identitylist.Pins
 }
 
 type txsExecutionContext struct {
@@ -124,6 +126,7 @@ type blockInsertionResult struct {
 	identityStateDiff *state.IdentityStateDiff
 	txReceipts        types.TxReceipts
 	txTasks           []task
+	identityList      *identitylist.List
 }
 
 type identityUpdateHookCtx struct {
@@ -132,20 +135,25 @@ type identityUpdateHookCtx struct {
 
 type Middleware = func(block *types.Block, appState *appstate.AppState)
 
-func NewBlockchain(config *config.Config, db dbm.DB, txpool *mempool.TxPool, appState *appstate.AppState,
+func NewBlockchain(cfg *config.Config, db dbm.DB, txpool *mempool.TxPool, appState *appstate.AppState,
 	ipfs ipfs.Proxy, secStore *secstore.SecStore, bus eventbus.Bus, offlineDetector *OfflineDetector, keyStore *keystore.KeyStore, subManager *subscriptions.Manager, upgrader *upgrade.Upgrader) *Blockchain {
+	identityListKeep := config.GetDefaultIpfsConfig().IdentityListKeep
+	if cfg.IpfsConf != nil {
+		identityListKeep = cfg.IpfsConf.IdentityListKeep
+	}
 	return &Blockchain{
+		identityLists:   identitylist.NewPins(db, ipfs, identityListKeep),
 		repo:            database.NewRepo(db),
-		config:          config,
+		config:          cfg,
 		log:             log.New(),
 		txpool:          txpool,
 		appState:        appState,
 		ipfs:            ipfs,
-		timing:          NewTiming(config.Validation),
+		timing:          NewTiming(cfg.Validation),
 		bus:             bus,
 		secStore:        secStore,
 		offlineDetector: offlineDetector,
-		indexer:         newBlockchainIndexer(db, bus, config, keyStore),
+		indexer:         newBlockchainIndexer(db, bus, cfg, keyStore),
 		subManager:      subManager,
 		upgrader:        upgrader,
 		ipfsLoadQueue:   make(chan *attachments.StoreToIpfsAttachment, 100),
@@ -425,7 +433,9 @@ func (chain *Blockchain) generateEmptyBlock(checkState *appstate.AppState, prevB
 
 	block.Header.EmptyBlockHeader.Root = checkState.State.Root()
 	block.Header.EmptyBlockHeader.IdentityRoot = checkState.IdentityState.Root()
-	return block, &blockInsertionResult{stateDiff: stateDiff, identityStateDiff: identityStateDiff}
+	identityList := chain.buildIdentityList(checkState, block)
+	block.Header.EmptyBlockHeader.IdentityListCid = identityListCidBytes(identityList)
+	return block, &blockInsertionResult{stateDiff: stateDiff, identityStateDiff: identityStateDiff, identityList: identityList}
 }
 
 func (chain *Blockchain) GenerateEmptyBlock() *types.Block {
@@ -468,6 +478,7 @@ func (chain *Blockchain) AddBlock(block *types.Block, checkState *appstate.AppSt
 		if err := chain.insertBlock(block, blockInsertionResult.identityStateDiff, blockInsertionResult.txReceipts); err != nil {
 			return err
 		}
+		chain.pinIdentityList(block, blockInsertionResult.identityList)
 
 		for _, task := range blockInsertionResult.txTasks {
 			task()
@@ -501,6 +512,7 @@ func (chain *Blockchain) applyBlockOnState(appState *appstate.AppState, block *t
 	chain.applyStatusSwitch(appState, block, statsCollector)
 	chain.applyDelayedOfflinePenalties(appState, block, statsCollector)
 	undelegations := chain.applyDelegationSwitch(appState, block, statsCollector)
+	chain.queueFrozenUndelegations(appState)
 	chain.applyDiscriminationStatusSwitch(appState, block, statsCollector)
 	chain.applyNewEpoch(appState, block, statsCollector)
 	chain.applyBlockRewards(totalFee, totalTips, appState, block, blockRewardCtx, statsCollector)
@@ -524,6 +536,7 @@ func (chain *Blockchain) applyEmptyBlockOnState(
 	chain.applyStatusSwitch(appState, block, statsCollector)
 	chain.applyDelayedOfflinePenalties(appState, block, statsCollector)
 	undelegations := chain.applyDelegationSwitch(appState, block, statsCollector)
+	chain.queueFrozenUndelegations(appState)
 	chain.applyDiscriminationStatusSwitch(appState, block, statsCollector)
 	chain.applyNewEpoch(appState, block, statsCollector)
 	chain.switchPoolsToOffline(appState, undelegations, block)
@@ -626,9 +639,6 @@ func (chain *Blockchain) applyBlockRewards(totalFee *big.Int, totalTips *big.Int
 	intFeeReward := new(big.Int)
 	intFeeReward.Sub(totalFee, intBurn)
 
-	totalReward := big.NewInt(0).Add(blockProposerReward, intFeeReward)
-	totalReward.Add(totalReward, totalTips)
-
 	coinbase := block.Header.Coinbase()
 
 	status := appState.State.GetIdentityState(coinbase)
@@ -642,6 +652,12 @@ func (chain *Blockchain) applyBlockRewards(totalFee *big.Int, totalTips *big.Int
 		status = appState.State.GetIdentityState(subIdentity)
 		stakeDest = subIdentity
 	}
+
+	// v13: the minted part follows the flip quality of the identity whose stake is paid; fees and tips do not.
+	blockProposerReward = mintedReward(appState, chain.config.Consensus, statsCollector, stakeDest, blockProposerReward)
+
+	totalReward := big.NewInt(0).Add(blockProposerReward, intFeeReward)
+	totalReward.Add(totalReward, totalTips)
 
 	reward, stake := splitReward(totalReward, status == state.Newbie, chain.config.Consensus)
 
@@ -1315,6 +1331,8 @@ func (chain *Blockchain) rewardFinalCommittee(appState *appstate.AppState, block
 		}
 		remainingReward.Sub(remainingReward, totalRewardInt)
 		paidReward.Add(paidReward, totalRewardInt)
+		// v13: the part the member's flip quality removes is never minted (it does not go to the proposer either).
+		totalRewardInt = mintedReward(appState, chain.config.Consensus, statsCollector, addr, totalRewardInt)
 
 		identityState := appState.State.GetIdentityState(addr)
 
@@ -1324,7 +1342,7 @@ func (chain *Blockchain) rewardFinalCommittee(appState *appstate.AppState, block
 		balanceDest := addr
 		if delegator := appState.ValidatorsCache.Delegator(addr); !delegator.IsEmpty() {
 			penaltySource = delegator
-			balanceDest = delegator
+			balanceDest = chain.config.Consensus.RewardDest(addr, &delegator)
 		}
 		// calculate penalty
 		balanceAdd, stakeAdd, penaltySub, penaltySecondsSub := calculatePenalty(balanceReward, stakeReward, appState.State.GetPenalty(penaltySource), appState.State.GetPenaltySeconds(penaltySource), appState.State.GetPenaltyTimestamp(penaltySource), block.Header.Time())
@@ -1943,7 +1961,9 @@ func (chain *Blockchain) applyDelegationSwitch(appState *appstate.AppState, bloc
 		} else {
 			_, becamePool := newPools[delegation.Delegator]
 			noDelegatorPenalty := appState.State.GetPenaltySeconds(delegation.Delegator) == 0
-			if appState.State.Delegatee(delegation.Delegatee) == nil &&
+			// Consensus v13: a switch to a frozen address (queued before the upgrade) is dropped.
+			if !chain.config.Consensus.IsFrozenAddress(delegation.Delegatee) &&
+				appState.State.Delegatee(delegation.Delegatee) == nil &&
 				(enableUpgrade10 || appState.State.PendingUndelegation(delegation.Delegatee) == nil) &&
 				!becamePool && !appState.ValidatorsCache.IsPool(delegation.Delegator) &&
 				(!enableUpgrade10 || noDelegatorPenalty) {
@@ -1965,6 +1985,34 @@ func (chain *Blockchain) applyDelegationSwitch(appState *appstate.AppState, bloc
 	}
 	appState.State.ClearDelegations()
 	return undelegations
+}
+
+// queueFrozenUndelegations undelegates, under consensus v13, every identity delegated to a frozen address: it queues
+// the same switch an UndelegateTx queues, applied at the next delegation switch block, after which the identity's
+// rewards are its own. Until then its pool rewards are destroyed (the state never credits a frozen address). The
+// pools come from the validators cache, the same on every node; the order is sorted.
+func (chain *Blockchain) queueFrozenUndelegations(appState *appstate.AppState) {
+	consensus := chain.config.Consensus
+	if consensus == nil || !consensus.EnableUpgrade13 || len(consensus.FrozenAddresses) == 0 {
+		return
+	}
+	frozen := make([]common.Address, 0, len(consensus.FrozenAddresses))
+	for addr := range consensus.FrozenAddresses {
+		frozen = append(frozen, addr)
+	}
+	sort.Slice(frozen, func(i, j int) bool { return bytes.Compare(frozen[i][:], frozen[j][:]) < 0 })
+	for _, pool := range frozen {
+		for _, delegator := range appState.ValidatorsCache.PoolDelegators(pool) {
+			// The cache is refreshed when the block is committed: a delegator undelegated by this very block is
+			// still listed. The state is current.
+			if delegatee := appState.State.Delegatee(delegator); delegatee == nil || *delegatee != pool {
+				continue
+			}
+			if appState.State.DelegationSwitch(delegator) == nil {
+				appState.State.ToggleDelegationAddress(delegator, common.EmptyAddress)
+			}
+		}
+	}
 }
 
 func (chain *Blockchain) switchPoolsToOffline(appState *appstate.AppState, undelegations []*state.Delegation, block *types.Block) {
@@ -2099,6 +2147,7 @@ func (chain *Blockchain) ProposeBlock(proof []byte) *types.BlockProposal {
 	}
 
 	block.Header.ProposedHeader.Root, block.Header.ProposedHeader.IdentityRoot, _, _ = chain.applyBlockOnState(checkState, block, totalFee, totalTips, usedGas, blockRewardCtx, nil)
+	block.Header.ProposedHeader.IdentityListCid = identityListCidBytes(chain.buildIdentityList(checkState, block))
 
 	proposal := &types.BlockProposal{Block: block, Proof: proof}
 	hash := crypto.SignatureHash(proposal)
@@ -2371,6 +2420,12 @@ func (chain *Blockchain) validateBlock(checkState *appstate.AppState, block *typ
 		return nil, errors.New("proposer is not identity")
 	}
 
+	// Consensus v13: a frozen address never earns a block reward. Checked on whole blocks only, under the rules of
+	// the block's height: fast sync checks old headers against the current rules.
+	if chain.config.Consensus.IsFrozenAddress(proposerAddr) {
+		return nil, errors.New("proposer is frozen")
+	}
+
 	var txs = types.Transactions(block.Body.Transactions)
 
 	if types.DeriveSha(txs) != block.Header.ProposedHeader.TxHash {
@@ -2413,6 +2468,10 @@ func (chain *Blockchain) validateBlock(checkState *appstate.AppState, block *typ
 	if root, identityRoot, stateDiff, identityStateDiff = chain.applyBlockOnState(checkState, block, totalFee, totalTips, usedGas, blockRewardCtx, statsCollector); root != block.Root() || identityRoot != block.IdentityRoot() {
 		return nil, errors.Errorf("invalid block roots. Expected=%x & %x, actual=%x & %x", root, identityRoot, block.Root(), block.IdentityRoot())
 	}
+	identityList := chain.buildIdentityList(checkState, block)
+	if err := validateIdentityListCid(identityList, block); err != nil {
+		return nil, err
+	}
 
 	cid, _ := chain.ipfs.Cid(block.Body.ToBytes())
 
@@ -2434,7 +2493,7 @@ func (chain *Blockchain) validateBlock(checkState *appstate.AppState, block *typ
 	if bytes.Compare(receiptCidBytes, block.Header.ProposedHeader.TxReceiptsCid) != 0 {
 		return nil, errors.New("invalid receipt cid")
 	}
-	return &blockInsertionResult{stateDiff: stateDiff, identityStateDiff: identityStateDiff, txReceipts: receipts, txTasks: tasks}, nil
+	return &blockInsertionResult{stateDiff: stateDiff, identityStateDiff: identityStateDiff, txReceipts: receipts, txTasks: tasks, identityList: identityList}, nil
 }
 
 func (chain *Blockchain) ValidateBlockCertOnHead(block *types.Header, cert *types.BlockCert) error {

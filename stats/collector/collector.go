@@ -52,6 +52,8 @@ type StatsCollector interface {
 
 	AddMintedCoins(amount *big.Int)
 	AddPenaltyBurntCoins(addr common.Address, amount *big.Int)
+	// AddFlipQualityBurntCoins: the part of a reward addr earned that its v13 flip quality removed (never minted).
+	AddFlipQualityBurntCoins(addr common.Address, amount *big.Int)
 	AddInviteBurntCoins(addr common.Address, amount *big.Int, tx *types.Transaction)
 	AddFeeBurntCoins(addr common.Address, feeAmount *big.Int, burntRate float32, tx *types.Transaction)
 	AddKilledBurntCoins(addr common.Address, amount *big.Int)
@@ -503,6 +505,17 @@ func AddPenaltyBurntCoins(c StatsCollector, addr common.Address, amount *big.Int
 		return
 	}
 	c.AddPenaltyBurntCoins(addr, amount)
+}
+
+func (c *collectorStub) AddFlipQualityBurntCoins(addr common.Address, amount *big.Int) {
+	// do nothing
+}
+
+func AddFlipQualityBurntCoins(c StatsCollector, addr common.Address, amount *big.Int) {
+	if c == nil {
+		return
+	}
+	c.AddFlipQualityBurntCoins(addr, amount)
 }
 
 func (c *collectorStub) AddInviteBurntCoins(addr common.Address, amount *big.Int, tx *types.Transaction) {

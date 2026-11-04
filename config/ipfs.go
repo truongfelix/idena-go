@@ -24,6 +24,9 @@ type IpfsConfig struct {
 	// bigger buffer cuts these writes. It costs about 2 times the added buffer in memory (the memtable and
 	// the one being flushed) and applies when the datastore is opened: a change takes a restart.
 	DatastoreWriteBufferMiB int
+	// IdentityListKeep is the number of identity lists (consensus v13: one every snapshot block) the node keeps
+	// pinned besides the last ceremony's; -1 keeps every list (a history node).
+	IdentityListKeep int
 	// NextValidation is read from the chain at start (zero: unknown), never saved: an IPFS repository left in Badger
 	// is not converted at a start near a validation, since the node cannot validate while it converts.
 	NextValidation time.Time `json:"-"`
@@ -40,6 +43,7 @@ type IpfsGcConfig struct {
 func GetDefaultIpfsConfig() *IpfsConfig {
 	return &IpfsConfig{
 		BlockPinThreshold: 0.3,
+		IdentityListKeep:  3,
 		FlipPinThreshold:  0.5,
 		Profile:           "server",
 		Gc: IpfsGcConfig{

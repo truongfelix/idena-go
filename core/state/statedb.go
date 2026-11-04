@@ -55,6 +55,21 @@ func init() {
 
 type IdentityUpdateHook = func(identity *Identity)
 
+// frozenAddressCheck reports whether an address is frozen under the running consensus rules (v13): a credit of
+// balance or stake to it is destroyed, whatever pays it (rewards, stake transfers, refunds). Transactions to it are
+// refused before they reach the state. nil (tests, a node not set up) freezes nothing.
+var frozenAddressCheck func(addr common.Address) bool
+
+// SetFrozenAddressCheck sets the check the state applies to every balance and stake credit. The node sets it once,
+// reading the running consensus config at each call, so it follows an upgrade and a fast sync's revert.
+func SetFrozenAddressCheck(check func(addr common.Address) bool) {
+	frozenAddressCheck = check
+}
+
+func isFrozen(addr common.Address) bool {
+	return frozenAddressCheck != nil && frozenAddressCheck(addr)
+}
+
 type StateDB struct {
 	original dbm.DB
 	db       dbm.DB
@@ -326,6 +341,9 @@ func (s *StateDB) ClearAccount(addr common.Address) {
 
 // AddBalance adds amount to the account associated with addr
 func (s *StateDB) AddBalance(addr common.Address, amount *big.Int) {
+	if isFrozen(addr) {
+		return
+	}
 	stateObject := s.GetOrNewAccountObject(addr)
 	if stateObject != nil {
 		stateObject.AddBalance(amount)
@@ -378,14 +396,23 @@ func (s *StateDB) GodAddress() common.Address {
 }
 
 func (s *StateDB) AddStake(address common.Address, intStake *big.Int) {
+	if isFrozen(address) {
+		return
+	}
 	s.GetOrNewIdentityObject(address).AddStake(intStake)
 }
 
 func (s *StateDB) AddReplenishedStake(address common.Address, intStake *big.Int) {
+	if isFrozen(address) {
+		return
+	}
 	s.GetOrNewIdentityObject(address).AddReplenishedStake(intStake)
 }
 
 func (s *StateDB) AddLockedStake(address common.Address, amount *big.Int) {
+	if isFrozen(address) {
+		return
+	}
 	s.GetOrNewIdentityObject(address).AddLockedStake(amount)
 }
 

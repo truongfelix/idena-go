@@ -1,0 +1,16 @@
+;; Source of frozen_transfer.wasm: "send"(to, amount) makes one iDNA transfer promise.
+(module
+  (import "env" "create_transfer_promise" (func $t (param i32 i32)))
+  (memory (export "memory") 1)
+  (global $next (mut i32) (i32.const 1024))
+  (func (export "allocate") (param $size i32) (result i32)
+    (local $reg i32)
+    (local.set $reg (global.get $next))
+    (i32.store (local.get $reg) (i32.add (local.get $reg) (i32.const 12)))
+    (i32.store offset=4 (local.get $reg) (local.get $size))
+    (i32.store offset=8 (local.get $reg) (i32.const 0))
+    (global.set $next (i32.add (i32.add (local.get $reg) (i32.const 12)) (local.get $size)))
+    (local.get $reg))
+  (func (export "deploy"))
+  (func (export "send") (param $to i32) (param $amount i32)
+    (call $t (local.get $to) (local.get $amount))))

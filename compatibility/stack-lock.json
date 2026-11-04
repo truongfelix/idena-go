@@ -13,7 +13,17 @@
     "intermediateGenesisHeaderSha256": "27e696414b955714ba7ed4defe063794c8dcadef28a7e61dd9249b8623571b3c",
     "stateSnapshotSha256": "7cf6f8c334d76a3617cbd5ac3aa5a104a8d337cb6ceb8d6906c62bf7fab8d131",
     "identitySnapshotSha256": "f136ec8939e3f78587a38de517128c7071501e283bac7d12c24ce4be830ff8aa",
-    "consensusChangesAllowed": false
+    "consensusChangesAllowed": true,
+    "consensusChanges": [
+      {
+        "version": 13,
+        "frozenAddresses": [
+          "0x98d16d7021930b788135dd834983394ff2de9869"
+        ],
+        "votingWindowStart": "2026-11-02T00:00:00Z",
+        "votingWindowEnd": "2027-01-01T00:00:00Z"
+      }
+    ]
   },
   "components": [
     {

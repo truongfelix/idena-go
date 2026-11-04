@@ -67,6 +67,7 @@ var (
 	WrongEpoch           = errors.New("wrong epoch")
 	InvalidDeployAmount  = errors.New("insufficient amount to create contract")
 	SenderHasPenalty     = errors.New("sender has penalty")
+	FrozenAddress        = errors.New("address is frozen")
 
 	validators map[types.TxType]validator
 )
@@ -145,6 +146,10 @@ func ValidateTx(appState *appstate.AppState, tx *types.Transaction, minFeePerGas
 
 	if sender == (common.Address{}) {
 		return InvalidSignature
+	}
+
+	if appCfg != nil && (appCfg.Consensus.IsFrozenAddress(sender) || tx.To != nil && appCfg.Consensus.IsFrozenAddress(*tx.To)) {
+		return FrozenAddress
 	}
 
 	if appCfg != nil && appCfg.Consensus.EnableUpgrade11 {
