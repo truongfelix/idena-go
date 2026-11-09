@@ -123,10 +123,12 @@ func (s *Service) History(address common.Address) (*History, error) {
 
 	h := &History{Address: address, Own: own, Epoch: current, CeremoniesComplete: complete}
 	summaries := make(map[uint16]*validationsummary.Summary)
+	validated := make(map[uint16]*bool)
 	for epoch := int(current); epoch >= int(oldest); epoch-- {
 		e := &Epoch{Epoch: uint16(epoch), Ceremony: ceremonies[uint16(epoch)], Transactions: txs[uint16(epoch)]}
 		if e.Ceremony != nil {
 			e.Validated = s.validatedBy(e.Ceremony.Height, address)
+			validated[uint16(epoch)] = e.Validated
 		}
 		if uint16(epoch) < current {
 			if e.Summary, err = s.summaries.Get(uint16(epoch), address); err != nil {
@@ -153,7 +155,7 @@ func (s *Service) History(address common.Address) (*History, error) {
 		}
 		h.Epochs = append(h.Epochs, e)
 	}
-	h.Scores = labelScores(identity.Scores, current, summaries, txs)
+	h.Scores = labelScores(identity.Scores, current, summaries, validated, txs)
 	return h, nil
 }
 
@@ -216,11 +218,14 @@ func (s *Service) transactions(address common.Address) map[uint16]*Transactions 
 
 // labelScores gives each score the epoch of the ceremony that added it, newest first, as far as it is known
 // exactly. A ceremony adds a score when the identity took part without missing it (ceremony.go AddNewScore). The
-// summaries tell it per epoch; before them, the epochs where the address sent both answers count only when they
-// match the remaining scores one for one (a validation can be missed with both answers sent, and the transaction
-// history can have holes): else those scores stay without epoch.
+// summaries tell it per epoch. A ceremony the node did not apply itself (a fast sync past its block) has none; it
+// added a score all the same when the address stayed validated through it (the block's identity changes, kept after
+// a fast sync: a missed validation drops the identity, and a failed ceremony writes none) and sent its short answers.
+// Before them, the epochs where the address sent both answers count only when they match the remaining scores one
+// for one (a validation can be missed with both answers sent, and the transaction history can have holes): else
+// those scores stay without epoch.
 func labelScores(scores []byte, current uint16, summaries map[uint16]*validationsummary.Summary,
-	txs map[uint16]*Transactions) []*Score {
+	validated map[uint16]*bool, txs map[uint16]*Transactions) []*Score {
 	result := make([]*Score, len(scores))
 	for i, score := range scores {
 		points, flips := common.DecodeScore(score)
@@ -229,12 +234,21 @@ func labelScores(scores []byte, current uint16, summaries map[uint16]*validation
 	next := len(result) - 1
 	epoch := int(current) - 1
 	for ; next >= 0 && epoch >= 0; epoch-- {
-		summary := summaries[uint16(epoch)]
-		if summary == nil || summary.ValidationFailed {
+		e := uint16(epoch)
+		summary := summaries[e]
+		if summary == nil {
+			stayed := validated[e] != nil && *validated[e]
+			if !stayed || txs[e] == nil || !txs[e].ShortAnswers {
+				break
+			}
+			result[next].Epoch = &e
+			next--
+			continue
+		}
+		if summary.ValidationFailed {
 			break
 		}
 		if summary.Participated && !summary.Missed {
-			e := uint16(epoch)
 			result[next].Epoch = &e
 			next--
 		}

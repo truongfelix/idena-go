@@ -229,6 +229,7 @@ func NewNodeWithInjections(config *config.Config, bus eventbus.Bus, statsCollect
 		return nil, errors.Wrap(err, "cannot set API key")
 	}
 
+	config.IpfsConf.NextValidation = nextValidationTime(db)
 	ipfsProxy, err := ipfs.NewIpfsProxy(config.IpfsConf, bus)
 	if err != nil {
 		return nil, err
@@ -514,6 +515,23 @@ func (node *Node) stopHTTP() {
 // openChainDatabase opens the chain database of cfg.DataDir as the node does.
 func openChainDatabase(cfg *config.Config, compact bool) (db.DB, error) {
 	return OpenDatabaseWithWriteBuffer(cfg.DataDir, "idenachain", 16, 16, cfg.DatabaseWriteBufferMiB(), compact)
+}
+
+// nextValidationTime reads the next validation time at the chain's head (zero when there is no chain yet).
+func nextValidationTime(chain db.DB) time.Time {
+	head := database.NewRepo(chain).ReadHead()
+	if head == nil {
+		return time.Time{}
+	}
+	stateDb, err := state.NewLazy(chain)
+	if err != nil {
+		return time.Time{}
+	}
+	readonly, err := stateDb.Readonly(int64(head.Height()))
+	if err != nil {
+		return time.Time{}
+	}
+	return readonly.NextValidationTime()
 }
 
 func OpenDatabase(datadir string, name string, cache int, handles int, compact bool) (db.DB, error) {

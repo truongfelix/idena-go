@@ -80,7 +80,7 @@ func TestTxPool_addDeferredTx(t *testing.T) {
 }
 
 func TestTxPool_ResetTo(t *testing.T) {
-	pool := getPool(t.TempDir())
+	pool := getPool(t, t.TempDir())
 
 	keys := make([]*ecdsa.PrivateKey, 0)
 
@@ -178,10 +178,18 @@ func TestTxPool_ResetTo(t *testing.T) {
 	require.Equal(t, 0, len(pool.pendingTxs))
 }
 
-func getPool(datadir string) *TxPool {
+// getPool makes a pool on datadir whose tx keeper (started by Initialize) is stopped when the test ends, before
+// t.TempDir's folder is removed: a save still under way made that removal fail ("directory not empty").
+func getPool(t *testing.T, datadir string) *TxPool {
 	bus := eventbus.New()
 	appState, _ := appstate.NewAppState(db.NewMemDB(), bus)
-	return NewTxPool(appState, bus, &config.Config{DataDir: datadir, Mempool: config.GetDefaultMempoolConfig(), Consensus: config.GetDefaultConsensusConfig()}, collector.NewStatsCollector())
+	pool := NewTxPool(appState, bus, &config.Config{DataDir: datadir, Mempool: config.GetDefaultMempoolConfig(), Consensus: config.GetDefaultConsensusConfig()}, collector.NewStatsCollector())
+	t.Cleanup(func() {
+		if pool.txKeeper != nil {
+			pool.txKeeper.Stop()
+		}
+	})
+	return pool
 }
 
 func TestSortedTxs_Remove(t *testing.T) {
@@ -276,7 +284,7 @@ func TestTxPool_AddWithTxKeeper(t *testing.T) {
 	txKeeperPersistInterval = time.Millisecond * 200
 
 	datadir := t.TempDir()
-	pool := getPool(datadir)
+	pool := getPool(t, datadir)
 
 	keys := make([]*ecdsa.PrivateKey, 0)
 
@@ -335,8 +343,10 @@ func TestTxPool_AddWithTxKeeper(t *testing.T) {
 
 	// wait for async mempool saving
 	prevPool.txKeeper.persist()
+	// A restart: the old pool's keeper no longer writes the file the new pool reads.
+	prevPool.txKeeper.Stop()
 
-	pool = getPool(datadir)
+	pool = getPool(t, datadir)
 	pool.appState = prevPool.appState
 	pool.Initialize(&types.Header{
 		EmptyBlockHeader: &types.EmptyBlockHeader{
@@ -374,7 +384,7 @@ func TestTxPool_RecoverValidationTxs_OnAfterLongSession(t *testing.T) {
 	txKeeperPersistInterval = time.Millisecond * 200
 
 	datadir := t.TempDir()
-	pool := getPool(datadir)
+	pool := getPool(t, datadir)
 
 	key, _ := crypto.GenerateKey()
 	address := crypto.PubkeyToAddress(key.PublicKey)
@@ -414,7 +424,9 @@ func TestTxPool_RecoverValidationTxs_OnAfterLongSession(t *testing.T) {
 
 	time.Sleep(time.Millisecond * 500)
 	prevPool := pool
-	pool = getPool(datadir)
+	// A restart: the old pool's keeper no longer writes the file the new pool reads.
+	prevPool.txKeeper.Stop()
+	pool = getPool(t, datadir)
 	pool.appState = prevPool.appState
 	pool.appState.State.SetValidationPeriod(state.AfterLongSessionPeriod)
 
@@ -434,7 +446,8 @@ func TestTxPool_RecoverValidationTxs_OnAfterLongSession(t *testing.T) {
 	pool.appState.State.SetState(address2, state.Candidate)
 	pool.appState.Commit(nil)
 
-	pool = getPool(datadir)
+	pool.txKeeper.Stop()
+	pool = getPool(t, datadir)
 	pool.appState = prevPool.appState
 
 	pool.Initialize(&types.Header{
