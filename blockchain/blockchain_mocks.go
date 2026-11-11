@@ -199,7 +199,7 @@ func (chain *TestBlockchain) CopyWith(cfg *config.Config, secStore *secstore.Sec
 	if err := appState.Initialize(copied.Head.Height()); err != nil {
 		return nil, nil, err
 	}
-	txPool.Initialize(chain.Head, secStore.GetAddress(), false)
+	txPool.Initialize(copied.Head, secStore.GetAddress(), false)
 	return &TestBlockchain{db, copied, appState.State.GetNonce(secStore.GetAddress())}, appState, nil
 }
 
