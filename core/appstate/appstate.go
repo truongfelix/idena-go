@@ -169,6 +169,8 @@ func (s *AppState) FinalizePrecommit(block *types.Block) error {
 	if block != nil {
 		s.ValidatorsCache.RefreshIfUpdated(s.State.GodAddress(), block, s.prevPrecommitDiff)
 	}
+	// The diff belongs to this precommit only: a later commit must not refresh the validators from it.
+	s.prevPrecommitDiff = nil
 
 	return err
 }

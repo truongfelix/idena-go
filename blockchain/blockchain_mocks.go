@@ -142,15 +142,6 @@ func (chain *TestBlockchain) AddTx(tx *types.Transaction) error {
 }
 
 func (chain *TestBlockchain) Copy() (*TestBlockchain, *appstate.AppState) {
-	db := db.NewMemDB()
-	bus := eventbus.New()
-
-	it, _ := chain.db.Iterator(nil, nil)
-	defer it.Close()
-	for ; it.Valid(); it.Next() {
-		db.Set(it.Key(), it.Value())
-	}
-	appState, _ := appstate.NewAppState(db, bus)
 	consensusCfg := GetDefaultConsensusConfig()
 	consensusCfg.Automine = true
 	cfg := &config.Config{
@@ -166,16 +157,50 @@ func (chain *TestBlockchain) Copy() (*TestBlockchain, *appstate.AppState) {
 		OfflineDetection: config.GetDefaultOfflineDetectionConfig(),
 		Mempool:          config.GetDefaultMempoolConfig(),
 	}
+	copied, appState, err := chain.CopyWith(cfg, chain.secStore)
+	if err != nil {
+		panic(err)
+	}
+	return copied, appState
+}
+
+// CopyWith returns a node on a copy of chain's database, with cfg and the keys of secStore: from then on the two
+// nodes can make different blocks (a fork).
+func (chain *TestBlockchain) CopyWith(cfg *config.Config, secStore *secstore.SecStore) (*TestBlockchain, *appstate.AppState, error) {
+	db := db.NewMemDB()
+	bus := eventbus.New()
+
+	it, err := chain.db.Iterator(nil, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer it.Close()
+	for ; it.Valid(); it.Next() {
+		if err := db.Set(it.Key(), it.Value()); err != nil {
+			return nil, nil, err
+		}
+	}
+	appState, err := appstate.NewAppState(db, bus)
+	if err != nil {
+		return nil, nil, err
+	}
 	txPool := mempool.NewTxPool(appState, bus, cfg, collector.NewStatsCollector())
-	offline := NewOfflineDetector(cfg, db, appState, chain.secStore, bus)
+	offline := NewOfflineDetector(cfg, db, appState, secStore, bus)
 	keyStore := keystore.NewKeyStore("./testdata", keystore.StandardScryptN, keystore.StandardScryptP)
-	subManager, _ := subscriptions.NewManager("./testdata2")
+	subManager, err := subscriptions.NewManager("./testdata2")
+	if err != nil {
+		return nil, nil, err
+	}
 	upgrader := upgrade.NewUpgrader(cfg, appState, db)
-	copy := NewBlockchain(cfg, db, txPool, appState, ipfs.NewMemoryIpfsProxy(), chain.secStore, bus, offline, keyStore, subManager, upgrader)
-	copy.InitializeChain()
-	appState.Initialize(copy.Head.Height())
-	txPool.Initialize(chain.Head, chain.secStore.GetAddress(), false)
-	return &TestBlockchain{db, copy, appState.State.GetNonce(chain.secStore.GetAddress())}, appState
+	copied := NewBlockchain(cfg, db, txPool, appState, ipfs.NewMemoryIpfsProxy(), secStore, bus, offline, keyStore, subManager, upgrader)
+	if err := copied.InitializeChain(); err != nil {
+		return nil, nil, err
+	}
+	if err := appState.Initialize(copied.Head.Height()); err != nil {
+		return nil, nil, err
+	}
+	txPool.Initialize(chain.Head, secStore.GetAddress(), false)
+	return &TestBlockchain{db, copied, appState.State.GetNonce(secStore.GetAddress())}, appState, nil
 }
 
 func (chain *TestBlockchain) addCert(block *types.Block) {

@@ -9,21 +9,13 @@ import (
 	"github.com/idena-network/idena-go/blockchain/types"
 	"github.com/idena-network/idena-go/blockchain/validation"
 	"github.com/idena-network/idena-go/common"
-	"github.com/idena-network/idena-go/common/eventbus"
 	"github.com/idena-network/idena-go/config"
 	"github.com/idena-network/idena-go/core/appstate"
-	"github.com/idena-network/idena-go/core/mempool"
 	"github.com/idena-network/idena-go/core/state"
-	"github.com/idena-network/idena-go/core/upgrade"
 	"github.com/idena-network/idena-go/crypto"
-	"github.com/idena-network/idena-go/ipfs"
-	"github.com/idena-network/idena-go/keystore"
 	"github.com/idena-network/idena-go/secstore"
-	"github.com/idena-network/idena-go/stats/collector"
-	"github.com/idena-network/idena-go/subscriptions"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
-	db "github.com/tendermint/tm-db"
 )
 
 func forkCheckConfig(god, other common.Address) *config.Config {
@@ -48,28 +40,13 @@ func forkCheckConfig(god, other common.Address) *config.Config {
 	}
 }
 
-// forkCopyWithKey returns a node on a copy of chain's database that proposes and votes with key.
-func forkCopyWithKey(chain *TestBlockchain, cfg *config.Config, key *ecdsa.PrivateKey) (*TestBlockchain, *appstate.AppState) {
-	memDb := db.NewMemDB()
-	bus := eventbus.New()
-	it, _ := chain.db.Iterator(nil, nil)
-	defer it.Close()
-	for ; it.Valid(); it.Next() {
-		memDb.Set(it.Key(), it.Value())
-	}
+func copyWithKey(t *testing.T, chain *TestBlockchain, cfg *config.Config, key *ecdsa.PrivateKey) (*TestBlockchain, *appstate.AppState) {
 	secStore := secstore.NewSecStore()
 	secStore.AddKey(crypto.FromECDSA(key))
-	appState, _ := appstate.NewAppState(memDb, bus)
-	txPool := mempool.NewTxPool(appState, bus, cfg, collector.NewStatsCollector())
-	offline := NewOfflineDetector(cfg, memDb, appState, secStore, bus)
-	keyStore := keystore.NewKeyStore("./testdata", keystore.StandardScryptN, keystore.StandardScryptP)
-	subManager, _ := subscriptions.NewManager("./testdata2")
-	upgrader := upgrade.NewUpgrader(cfg, appState, memDb)
-	copied := NewBlockchain(cfg, memDb, txPool, appState, ipfs.NewMemoryIpfsProxy(), secStore, bus, offline, keyStore, subManager, upgrader)
-	copied.InitializeChain()
-	appState.Initialize(copied.Head.Height())
-	txPool.Initialize(copied.Head, secStore.GetAddress(), false)
-	return &TestBlockchain{memDb, copied, appState.State.GetNonce(secStore.GetAddress())}, appState
+	copied, appState, err := chain.CopyWith(cfg, secStore)
+	require.NoError(t, err)
+	t.Cleanup(secStore.Destroy)
+	return copied, appState
 }
 
 // A fork whose blocks cross an online switch (an IdentityUpdate block) is checked with the validators that switch
@@ -86,7 +63,7 @@ func TestForkAcrossOnlineSwitchAccepted(t *testing.T) {
 
 	// The fork: the god address proposes until the switch block that makes the other identity online, then that
 	// identity proposes.
-	fork, forkState := forkCopyWithKey(node, forkCheckConfig(god, other), godKey)
+	fork, forkState := copyWithKey(t, node, forkCheckConfig(god, other), godKey)
 	payload, _ := (&attachments.OnlineStatusAttachment{Online: true}).ToBytes()
 	tx := BuildTx(forkState, other, nil, types.OnlineStatusTx, decimal.Zero, decimal.New(20, 0), decimal.Zero,
 		forkState.State.GetNonce(other)+1, 0, payload)
@@ -100,7 +77,7 @@ func TestForkAcrossOnlineSwitchAccepted(t *testing.T) {
 	switchHeight := fork.Head.Height()
 	require.True(t, forkState.ValidatorsCache.IsOnlineIdentity(other))
 
-	proposer, _ := forkCopyWithKey(fork, forkCheckConfig(god, other), otherKey)
+	proposer, _ := copyWithKey(t, fork, forkCheckConfig(god, other), otherKey)
 	proposer.GenerateBlocks(2, 0)
 	require.Equal(t, other, proposer.Head.Coinbase())
 
@@ -113,10 +90,9 @@ func TestForkAcrossOnlineSwitchAccepted(t *testing.T) {
 		}
 		block := maker.GetBlockByHeight(h)
 		require.NotNil(t, block, "height %v", h)
+		// Every block's own certificate: those after the switch are checked against the validators it brought.
 		cert := maker.GetCertificate(block.Hash())
-		if cert == nil || !block.Header.Flags().HasFlag(types.IdentityUpdate) {
-			cert = &types.BlockCert{}
-		}
+		require.False(t, cert.Empty(), "no certificate at height %v", h)
 		bundles = append(bundles, types.BlockBundle{Block: block, Cert: cert})
 	}
 	require.Greater(t, proposer.Head.Height(), switchHeight)
