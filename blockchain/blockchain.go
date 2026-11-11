@@ -2775,7 +2775,9 @@ func (chain *Blockchain) ValidateSubChain(startHeight uint64, blocks []types.Blo
 				return err
 			}
 		}
-		if err := checkState.Commit(b.Block); err != nil {
+		// The block check precommitted the state: commit with the identity diff it kept, so that the validators
+		// follow the block's online switches (as the full sync does). Commit would diff again and find nothing.
+		if err := checkState.FinalizePrecommit(b.Block); err != nil {
 			return err
 		}
 		prevBlock = b.Block.Header
