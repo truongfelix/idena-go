@@ -634,6 +634,78 @@ func (r *Repo) ReadConsensusVersionWithError() (uint32, error) {
 	return readUint32Metadata(data, err, "consensus version")
 }
 
+// WriteConsensusUpgradeHeight stores the height of the block that brought the stored consensus version; 0 removes it.
+func (r *Repo) WriteConsensusUpgradeHeight(batch dbm.Batch, height uint64) {
+	writeOrDeleteUint64(r.db, batch, consensusUpgradeHeightKey, height)
+}
+
+// ReadConsensusUpgradeHeight returns the height stored by WriteConsensusUpgradeHeight, 0 when there is none (a chain
+// that never applied an upgrade, or one applied by a node that did not store the height).
+func (r *Repo) ReadConsensusUpgradeHeight() uint64 {
+	return readUint64Key(r.db, consensusUpgradeHeightKey)
+}
+
+func (r *Repo) WritePreliminaryConsensusUpgradeHeight(height uint64) {
+	writeOrDeleteUint64(r.db, nil, preliminaryConsUpgradeHeightKey, height)
+}
+
+func (r *Repo) ReadPreliminaryConsensusUpgradeHeight() uint64 {
+	return readUint64Key(r.db, preliminaryConsUpgradeHeightKey)
+}
+
+func (r *Repo) RemovePreliminaryConsensusUpgradeHeight(batch dbm.Batch) {
+	writeOrDeleteUint64(r.db, batch, preliminaryConsUpgradeHeightKey, 0)
+}
+
+// WriteConsensusUpgrade stores the consensus version and the height of the block that brought it in one write.
+func (r *Repo) WriteConsensusUpgrade(version uint32, height uint64) error {
+	batch := r.db.NewBatch()
+	defer batch.Close()
+	r.WriteConsensusVersion(batch, version)
+	r.WriteConsensusUpgradeHeight(batch, height)
+	return batch.WriteSync()
+}
+
+// SetHeadAndConsensus moves the head to height and stores the consensus version and its upgrade height in one write,
+// so that a stop in between cannot leave the head of one version beside the rules of another.
+func (r *Repo) SetHeadAndConsensus(height uint64, version uint32, upgradeHeight uint64) error {
+	hash := r.ReadCanonicalHash(height)
+	if hash == (common.Hash{}) {
+		return fmt.Errorf("missing canonical header at height %d", height)
+	}
+	header := r.ReadBlockHeader(hash)
+	if header == nil {
+		return fmt.Errorf("missing block header at height %d", height)
+	}
+	batch := r.db.NewBatch()
+	defer batch.Close()
+	r.WriteHead(batch, header)
+	r.WriteConsensusVersion(batch, version)
+	r.WriteConsensusUpgradeHeight(batch, upgradeHeight)
+	return batch.WriteSync()
+}
+
+func writeOrDeleteUint64(db dbm.DB, batch dbm.Batch, key []byte, value uint64) {
+	switch {
+	case batch != nil && value == 0:
+		batch.Delete(key)
+	case batch != nil:
+		batch.Set(key, common.ToBytes(value))
+	case value == 0:
+		db.Delete(key)
+	default:
+		db.Set(key, common.ToBytes(value))
+	}
+}
+
+func readUint64Key(db dbm.DB, key []byte) uint64 {
+	data, err := db.Get(key)
+	if err != nil || len(data) != 8 {
+		return 0
+	}
+	return binary.LittleEndian.Uint64(data)
+}
+
 func (r *Repo) WritePreliminaryConsensusVersion(v uint32) {
 	r.db.Set(preliminaryConsVersionKey, common.ToBytes(v))
 }

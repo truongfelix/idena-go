@@ -1056,7 +1056,7 @@ func (vc *ValidationCeremony) ApplyNewEpoch(height uint64, appState *appstate.Ap
 
 		if len(applyingCache.epochApplyingResult) > 0 {
 			for addr, value := range applyingCache.epochApplyingResult {
-				validated, _, _ := applyOnState(vc.config.Consensus, appState, vc.epoch, statsCollector, addr, value)
+				validated, _, _ := applyOnState(appState.Consensus(vc.config.Consensus), appState, vc.epoch, statsCollector, addr, value)
 				if validated {
 					identitiesCount++
 				}
@@ -1224,7 +1224,7 @@ func (vc *ValidationCeremony) ApplyNewEpoch(height uint64, appState *appstate.Ap
 	}
 
 	for addr, value := range epochApplyingValues {
-		validated, pool, nonValidatedStake := applyOnState(vc.config.Consensus, appState, vc.epoch, statsCollector, addr, value)
+		validated, pool, nonValidatedStake := applyOnState(appState.Consensus(vc.config.Consensus), appState, vc.epoch, statsCollector, addr, value)
 		if validated {
 			identitiesCount++
 		}
@@ -1251,7 +1251,7 @@ func (vc *ValidationCeremony) ApplyNewEpoch(height uint64, appState *appstate.Ap
 				missed:                   true,
 			}
 			epochApplyingValues[addr] = value
-			applyOnState(vc.config.Consensus, appState, vc.epoch, statsCollector, addr, value)
+			applyOnState(appState.Consensus(vc.config.Consensus), appState, vc.epoch, statsCollector, addr, value)
 		}
 	}
 

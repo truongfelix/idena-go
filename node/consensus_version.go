@@ -59,6 +59,10 @@ func ApplyStoredConsensusVersion(cfg *config.Config) error {
 	// The default configuration points to the package's default consensus config: upgrade a copy.
 	consensus := *cfg.Consensus
 	for v := consensus.Version + 1; v <= targetVersion; v++ {
+		if v == targetVersion {
+			before := consensus
+			cfg.ConsensusBeforeUpgrade = &before
+		}
 		config.ApplyConsensusVersion(v, &consensus)
 	}
 	cfg.Consensus = &consensus

@@ -25,7 +25,7 @@ type WasmVM struct {
 func (vm *WasmVM) deploy(tx *types.Transaction, limit uint64) (env *WasmEnv, gasUsed uint64, actionResult []byte, err error) {
 	ctx := NewContractContext(tx)
 	env = NewWasmEnv(vm.appState, vm.blockHeaderProvider, ctx, vm.head, "deploy", vm.cfg.IsDebug, vm.commitToState, vm.cfg.Consensus.EnableUpgrade12, vm.statsCollector)
-	env.SetFrozenAddresses(vm.cfg.Consensus.FrozenAddresses)
+	env.SetFrozenAddresses(vm.appState.Consensus(vm.cfg.Consensus).FrozenAddresses)
 	attach := attachments.ParseDeployContractAttachment(tx)
 	actionResult = []byte{}
 	if attach == nil {
@@ -54,7 +54,7 @@ func (vm *WasmVM) call(tx *types.Transaction, limit uint64) (env *WasmEnv, gasUs
 	}
 	ctx := NewContractContext(tx)
 	env = NewWasmEnv(vm.appState, vm.blockHeaderProvider, ctx, vm.head, method, vm.cfg.IsDebug, vm.commitToState, vm.cfg.Consensus.EnableUpgrade12, vm.statsCollector)
-	env.SetFrozenAddresses(vm.cfg.Consensus.FrozenAddresses)
+	env.SetFrozenAddresses(vm.appState.Consensus(vm.cfg.Consensus).FrozenAddresses)
 	contract := *tx.To
 	code := vm.appState.State.GetContractCode(contract)
 	actionResult = []byte{}

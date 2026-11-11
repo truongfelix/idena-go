@@ -184,6 +184,16 @@ func ApplyConsensusVersion(ver ConsensusVerson, cfg *ConsensusConf) {
 	}
 }
 
+// UpgradedRules returns a copy of base with every consensus version up to ver applied (a copy of base when it is at
+// ver or above): the rules of the blocks after the upgrade block of ver.
+func UpgradedRules(base *ConsensusConf, ver ConsensusVerson) *ConsensusConf {
+	rules := *base
+	for v := rules.Version + 1; v <= ver; v++ {
+		ApplyConsensusVersion(v, &rules)
+	}
+	return &rules
+}
+
 // IsFrozenAddress reports whether no transaction may be sent from or to addr under these rules.
 func (cfg *ConsensusConf) IsFrozenAddress(addr common.Address) bool {
 	if cfg == nil || !cfg.EnableUpgrade13 {

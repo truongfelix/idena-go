@@ -185,6 +185,13 @@ func (chain *Blockchain) Config() *config.Config {
 func (chain *Blockchain) Indexer() *indexer {
 	return chain.indexer
 }
+
+// consensusRules returns the consensus rules of the block appState is used for: the rules it carries (a fork's block
+// below the node's last upgrade, set by ValidateSubChain), else the node's running rules.
+func (chain *Blockchain) consensusRules(appState *appstate.AppState) *config.ConsensusConf {
+	return appState.Consensus(chain.config.Consensus)
+}
+
 func (chain *Blockchain) tryUpgrade(block *types.Header) {
 	target := chain.upgrader.Target()
 	if target == chain.config.Consensus.Version {
@@ -192,7 +199,13 @@ func (chain *Blockchain) tryUpgrade(block *types.Header) {
 	}
 	if block.ProposedHeader != nil && block.ProposedHeader.Upgrade == uint32(chain.upgrader.Target()) {
 		chain.log.Info("Detected upgrade block", "upgrade", block.ProposedHeader.Upgrade)
-		chain.repo.WriteConsensusVersion(nil, block.ProposedHeader.Upgrade)
+		// The blocks up to this one followed the rules from before the upgrade: a fork that leaves the chain below
+		// it, and a reset below it, go back to them (ValidateSubChain, ResetTo).
+		before := *chain.config.Consensus
+		chain.config.ConsensusBeforeUpgrade = &before
+		if err := chain.repo.WriteConsensusUpgrade(block.ProposedHeader.Upgrade, block.Height()); err != nil {
+			chain.log.Error("Cannot store the consensus upgrade", "err", err)
+		}
 		chain.upgrader.CompleteMigration()
 		diff := time.Unix(block.Time(), 0).Add(chain.config.Consensus.MigrationTimeout).Sub(time.Now().UTC())
 		if diff > 0 {
@@ -625,7 +638,7 @@ func (chain *Blockchain) applyBlockRewards(totalFee *big.Int, totalTips *big.Int
 
 	var totalCommitteeReward *big.Int
 	totalCommitteeReward = chain.rewardFinalCommittee(appState, block, ctx, statsCollector)
-	blockReward := new(big.Int).Add(chain.config.Consensus.BlockReward, chain.config.Consensus.FinalCommitteeReward)
+	blockReward := new(big.Int).Add(chain.consensusRules(appState).BlockReward, chain.consensusRules(appState).FinalCommitteeReward)
 	blockProposerReward := new(big.Int).Sub(blockReward, totalCommitteeReward)
 
 	if blockProposerReward.Sign() <= 0 {
@@ -634,7 +647,7 @@ func (chain *Blockchain) applyBlockRewards(totalFee *big.Int, totalTips *big.Int
 
 	// calculate fee reward
 	burnFee := decimal.NewFromBigInt(totalFee, 0)
-	burnFee = burnFee.Mul(decimal.NewFromFloat32(chain.config.Consensus.FeeBurnRate))
+	burnFee = burnFee.Mul(decimal.NewFromFloat32(chain.consensusRules(appState).FeeBurnRate))
 	intBurn := math.ToInt(burnFee)
 	intFeeReward := new(big.Int)
 	intFeeReward.Sub(totalFee, intBurn)
@@ -654,12 +667,12 @@ func (chain *Blockchain) applyBlockRewards(totalFee *big.Int, totalTips *big.Int
 	}
 
 	// v13: the minted part follows the flip quality of the identity whose stake is paid; fees and tips do not.
-	blockProposerReward = mintedReward(appState, chain.config.Consensus, statsCollector, stakeDest, blockProposerReward)
+	blockProposerReward = mintedReward(appState, chain.consensusRules(appState), statsCollector, stakeDest, blockProposerReward)
 
 	totalReward := big.NewInt(0).Add(blockProposerReward, intFeeReward)
 	totalReward.Add(totalReward, totalTips)
 
-	reward, stake := splitReward(totalReward, status == state.Newbie, chain.config.Consensus)
+	reward, stake := splitReward(totalReward, status == state.Newbie, chain.consensusRules(appState))
 
 	// calculate penalty
 	balanceAdd, stakeAdd, penaltySub, penaltySecondsSub := calculatePenalty(reward, stake, appState.State.GetPenalty(coinbase), appState.State.GetPenaltySeconds(coinbase), appState.State.GetPenaltyTimestamp(coinbase), block.Header.Time())
@@ -738,8 +751,8 @@ func (chain *Blockchain) applyNewEpoch(appState *appstate.AppState, block *types
 
 	validationResult := chain.applyNewEpochFn(block.Height(), appState, statsCollector)
 	networkSize, validationResults, pools, failed := validationResult.IdentitiesCount, validationResult.ShardResults, validationResult.Pools, validationResult.Failed
-	totalInvitesCount := float32(networkSize) * chain.config.Consensus.InvitesPercent
-	totalNewbies, totalVerified, totalSuspended, newbiesByShard, verifiedByShard, suspendedByShard := setNewIdentitiesAttributes(appState, chain.config.Consensus.UnlockStakeAge, totalInvitesCount, networkSize, pools, failed, validationResults, statsCollector)
+	totalInvitesCount := float32(networkSize) * chain.consensusRules(appState).InvitesPercent
+	totalNewbies, totalVerified, totalSuspended, newbiesByShard, verifiedByShard, suspendedByShard := setNewIdentitiesAttributes(appState, chain.consensusRules(appState).UnlockStakeAge, totalInvitesCount, networkSize, pools, failed, validationResults, statsCollector)
 	epochBlock := appState.State.EpochBlock()
 	if !failed {
 		var epochDurations []uint32
@@ -750,10 +763,10 @@ func (chain *Blockchain) applyNewEpoch(appState *appstate.AppState, block *types
 		for i := 0; i < epochDurationsLen; i++ {
 			epochDurations = append(epochDurations, uint32(epochBlocks[i+1]-epochBlocks[i]))
 		}
-		rewardValidIdentities(appState, chain.config.Consensus, validationResults, epochDurations, validationResult.NonValidatedStakes, statsCollector)
+		rewardValidIdentities(appState, chain.consensusRules(appState), validationResults, epochDurations, validationResult.NonValidatedStakes, statsCollector)
 
 		discriminationStakeThreshold := balanceShards(appState, totalNewbies, totalVerified, totalSuspended, newbiesByShard, verifiedByShard, suspendedByShard)
-		if !chain.config.Consensus.EnableUpgrade12 {
+		if !chain.consensusRules(appState).EnableUpgrade12 {
 			discriminationStakeThreshold = nil
 		}
 		applyDiscriminationStakeThreshold(appState, discriminationStakeThreshold)
@@ -764,7 +777,7 @@ func (chain *Blockchain) applyNewEpoch(appState *appstate.AppState, block *types
 	appState.State.IncEpoch()
 
 	validationTime := appState.State.NextValidationTime()
-	nextValidationTime := chain.config.Validation.GetNextValidationTime(validationTime, networkSize, chain.config.Consensus.EnableUpgrade12)
+	nextValidationTime := chain.config.Validation.GetNextValidationTime(validationTime, networkSize, chain.consensusRules(appState).EnableUpgrade12)
 	appState.State.SetNextValidationTime(nextValidationTime)
 
 	appState.State.SetFlipWordsSeed(block.Seed())
@@ -1316,7 +1329,7 @@ func (chain *Blockchain) rewardFinalCommittee(appState *appstate.AppState, block
 		return paidReward
 	}
 
-	blockReward := new(big.Int).Add(chain.config.Consensus.BlockReward, chain.config.Consensus.FinalCommitteeReward)
+	blockReward := new(big.Int).Add(chain.consensusRules(appState).BlockReward, chain.consensusRules(appState).FinalCommitteeReward)
 	rewardShareFloat := math.Div(math.Zero().SetInt(blockReward), ctx.totalStakeWeight)
 
 	remainingReward := blockReward
@@ -1332,17 +1345,17 @@ func (chain *Blockchain) rewardFinalCommittee(appState *appstate.AppState, block
 		remainingReward.Sub(remainingReward, totalRewardInt)
 		paidReward.Add(paidReward, totalRewardInt)
 		// v13: the part the member's flip quality removes is never minted (it does not go to the proposer either).
-		totalRewardInt = mintedReward(appState, chain.config.Consensus, statsCollector, addr, totalRewardInt)
+		totalRewardInt = mintedReward(appState, chain.consensusRules(appState), statsCollector, addr, totalRewardInt)
 
 		identityState := appState.State.GetIdentityState(addr)
 
-		balanceReward, stakeReward := splitReward(totalRewardInt, identityState == state.Newbie, chain.config.Consensus)
+		balanceReward, stakeReward := splitReward(totalRewardInt, identityState == state.Newbie, chain.consensusRules(appState))
 
 		penaltySource := addr
 		balanceDest := addr
 		if delegator := appState.ValidatorsCache.Delegator(addr); !delegator.IsEmpty() {
 			penaltySource = delegator
-			balanceDest = chain.config.Consensus.RewardDest(addr, &delegator)
+			balanceDest = chain.consensusRules(appState).RewardDest(addr, &delegator)
 		}
 		// calculate penalty
 		balanceAdd, stakeAdd, penaltySub, penaltySecondsSub := calculatePenalty(balanceReward, stakeReward, appState.State.GetPenalty(penaltySource), appState.State.GetPenaltySeconds(penaltySource), appState.State.GetPenaltyTimestamp(penaltySource), block.Header.Time())
@@ -1930,7 +1943,7 @@ func (chain *Blockchain) applyDelegationSwitch(appState *appstate.AppState, bloc
 		return
 	}
 	delegations := appState.State.Delegations()
-	enableUpgrade10 := chain.config.Consensus.EnableUpgrade10
+	enableUpgrade10 := chain.consensusRules(appState).EnableUpgrade10
 
 	newPools := map[common.Address]struct{}{}
 
@@ -1962,7 +1975,7 @@ func (chain *Blockchain) applyDelegationSwitch(appState *appstate.AppState, bloc
 			_, becamePool := newPools[delegation.Delegator]
 			noDelegatorPenalty := appState.State.GetPenaltySeconds(delegation.Delegator) == 0
 			// Consensus v13: a switch to a frozen address (queued before the upgrade) is dropped.
-			if !chain.config.Consensus.IsFrozenAddress(delegation.Delegatee) &&
+			if !chain.consensusRules(appState).IsFrozenAddress(delegation.Delegatee) &&
 				appState.State.Delegatee(delegation.Delegatee) == nil &&
 				(enableUpgrade10 || appState.State.PendingUndelegation(delegation.Delegatee) == nil) &&
 				!becamePool && !appState.ValidatorsCache.IsPool(delegation.Delegator) &&
@@ -1992,7 +2005,7 @@ func (chain *Blockchain) applyDelegationSwitch(appState *appstate.AppState, bloc
 // rewards are its own. Until then its pool rewards are destroyed (the state never credits a frozen address). The
 // pools come from the validators cache, the same on every node; the order is sorted.
 func (chain *Blockchain) queueFrozenUndelegations(appState *appstate.AppState) {
-	consensus := chain.config.Consensus
+	consensus := chain.consensusRules(appState)
 	if consensus == nil || !consensus.EnableUpgrade13 || len(consensus.FrozenAddresses) == 0 {
 		return
 	}
@@ -2422,7 +2435,7 @@ func (chain *Blockchain) validateBlock(checkState *appstate.AppState, block *typ
 
 	// Consensus v13: a frozen address never earns a block reward. Checked on whole blocks only, under the rules of
 	// the block's height: fast sync checks old headers against the current rules.
-	if chain.config.Consensus.IsFrozenAddress(proposerAddr) {
+	if chain.consensusRules(checkState).IsFrozenAddress(proposerAddr) {
 		return nil, errors.New("proposer is frozen")
 	}
 
@@ -2813,17 +2826,51 @@ func (chain *Blockchain) GenesisInfo() *types.GenesisInfo {
 	return chain.genesisInfo
 }
 
+// forkStartRules returns the consensus rules of the first block after startHeight on a fork: the rules from before
+// the node's last consensus upgrade when the fork leaves the chain below that upgrade's block (the blocks up to it
+// followed them), else the running rules.
+func (chain *Blockchain) forkStartRules(startHeight uint64) (*config.ConsensusConf, error) {
+	running := chain.config.Consensus
+	upgradeHeight := chain.repo.ReadConsensusUpgradeHeight()
+	if upgradeHeight == 0 || startHeight >= upgradeHeight {
+		return config.UpgradedRules(running, running.Version), nil
+	}
+	if chain.config.ConsensusBeforeUpgrade == nil {
+		return nil, errors.Errorf("fork leaves the chain below the consensus upgrade at %d, whose previous rules are unknown", upgradeHeight)
+	}
+	return config.UpgradedRules(chain.config.ConsensusBeforeUpgrade, chain.config.ConsensusBeforeUpgrade.Version), nil
+}
+
+// rulesAfter returns the rules of the block after block on a fork whose block follows rules: an upgrade block to
+// the upgrader's target brings the target's rules, as tryUpgrade does on the node's own chain.
+func (chain *Blockchain) rulesAfter(block *types.Header, rules *config.ConsensusConf) *config.ConsensusConf {
+	target := chain.upgrader.Target()
+	if block.ProposedHeader != nil && block.ProposedHeader.Upgrade == uint32(target) && rules.Version < target {
+		return config.UpgradedRules(rules, target)
+	}
+	return rules
+}
+
 func (chain *Blockchain) ValidateSubChain(startHeight uint64, blocks []types.BlockBundle) error {
 	checkState, err := chain.appState.ForCheckWithOverwrite(startHeight)
 	if err != nil {
 		return err
 	}
 	prevBlock := chain.GetBlockHeaderByHeight(startHeight)
+	// Each block of the fork is checked under the rules of its own height on the fork, not the node's running
+	// rules: a fork that leaves the chain below the node's last upgrade follows the rules from before it until its
+	// own upgrade block, and a fork that upgrades follows the new rules after its upgrade block.
+	rules, err := chain.forkStartRules(startHeight)
+	if err != nil {
+		return err
+	}
 
 	for _, b := range blocks {
+		checkState.SetConsensusRules(rules)
 		if _, err := chain.validateBlock(checkState, b.Block, prevBlock, nil, false); err != nil {
 			return err
 		}
+		rules = chain.rulesAfter(b.Block.Header, rules)
 		if b.Block.Header.Flags().HasFlag(types.IdentityUpdate) {
 			if b.Cert.Empty() {
 				return errors.New("Block cert is missing")
@@ -2849,10 +2896,35 @@ func (chain *Blockchain) ValidateSubChain(startHeight uint64, blocks []types.Blo
 
 func (chain *Blockchain) ResetTo(height uint64) (revertedTxs []*types.Transaction, err error) {
 	prevHead := chain.Head.Height()
+	// A reset below the block of the node's last consensus upgrade goes back to the rules from before it: the
+	// blocks applied next (a fork's, or the same again) follow them until an upgrade block brings the new rules.
+	upgradeHeight := chain.repo.ReadConsensusUpgradeHeight()
+	before := chain.config.ConsensusBeforeUpgrade
+	revertUpgrade := upgradeHeight > 0 && height < upgradeHeight
+	if revertUpgrade {
+		if before == nil {
+			return nil, errors.Errorf("cannot reset below the consensus upgrade at %d: the rules before it are unknown", upgradeHeight)
+		}
+		// Checked before the state is reset, so that the head, the state and the rules move together or not at all.
+		if chain.GetBlockHeaderByHeight(height) == nil {
+			return nil, errors.Errorf("missing block header at height %d", height)
+		}
+	}
 	if err := chain.appState.ResetTo(height); err != nil {
 		return nil, errors.WithMessage(err, "state is corrupted, try to resync from scratch")
 	}
-	chain.setHead(height, nil)
+	if revertUpgrade {
+		if err := chain.repo.SetHeadAndConsensus(height, uint32(before.Version), 0); err != nil {
+			return nil, err
+		}
+		chain.setCurrentHead(chain.GetHead())
+		// In place: every part of the node reads the rules through this config.
+		*chain.config.Consensus = *config.UpgradedRules(before, before.Version)
+		chain.config.ConsensusBeforeUpgrade = nil
+		chain.log.Warn("Consensus rules reverted below the upgrade block", "upgradeHeight", upgradeHeight, "version", before.Version)
+	} else {
+		chain.setHead(height, nil)
+	}
 
 	for h := height + 1; h <= prevHead; h++ {
 		hash := chain.repo.ReadCanonicalHash(h)
@@ -3157,6 +3229,8 @@ func (chain *Blockchain) AtomicSwitchToPreliminary(manifest *snapshot.Manifest) 
 	if consensusVersion > 0 {
 		chain.repo.WriteConsensusVersion(batch, consensusVersion)
 		chain.repo.RemovePreliminaryConsensusVersion(batch)
+		chain.repo.WriteConsensusUpgradeHeight(batch, chain.repo.ReadPreliminaryConsensusUpgradeHeight())
+		chain.repo.RemovePreliminaryConsensusUpgradeHeight(batch)
 	}
 	if preliminaryIntermediateGenesis > 0 {
 		chain.repo.WriteIntermediateGenesis(batch, preliminaryIntermediateGenesis)
@@ -3194,8 +3268,18 @@ func (chain *Blockchain) ReadPreliminaryConsensusVersionWithError() (uint32, err
 	return chain.repo.ReadPreliminaryConsensusVersionWithError()
 }
 
+// WritePreliminaryConsensusUpgradeHeight stores the height of the upgrade block of the chain a fast sync downloads.
+func (chain *Blockchain) WritePreliminaryConsensusUpgradeHeight(height uint64) {
+	chain.repo.WritePreliminaryConsensusUpgradeHeight(height)
+}
+
+func (chain *Blockchain) ReadPreliminaryConsensusUpgradeHeight() uint64 {
+	return chain.repo.ReadPreliminaryConsensusUpgradeHeight()
+}
+
 func (chain *Blockchain) RemovePreliminaryConsensusVersion() {
 	chain.repo.RemovePreliminaryConsensusVersion(nil)
+	chain.repo.RemovePreliminaryConsensusUpgradeHeight(nil)
 }
 
 func (chain *Blockchain) WritePreliminaryIntermediateGenesis(height uint64) {

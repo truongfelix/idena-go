@@ -117,6 +117,14 @@ func TestApplyStoredConsensusVersionAppliesV13(t *testing.T) {
 	if config.GetDefaultConsensusConfig().EnableUpgrade13 {
 		t.Fatal("the default consensus config was changed in place")
 	}
+	// The rules from before the last upgrade, which a fork or a reset below its block goes back to.
+	before := cfg.ConsensusBeforeUpgrade
+	if before == nil || before.Version != config.ConsensusV12 || !before.EnableUpgrade12 || before.EnableUpgrade13 {
+		t.Fatalf("rules before the upgrade = %+v, want version %d without v13", before, config.ConsensusV12)
+	}
+	if before.IsFrozenAddress(common.HexToAddress("0x98D16d7021930b788135dD834983394fF2De9869")) {
+		t.Fatal("the bridge wallet is frozen under the rules from before v13")
+	}
 }
 
 // A stored version this binary has no rules for stops the start: a node on older rules than its chain computes other

@@ -66,7 +66,17 @@ func SetFrozenAddressCheck(check func(addr common.Address) bool) {
 	frozenAddressCheck = check
 }
 
-func isFrozen(addr common.Address) bool {
+// SetFrozenAddressCheck sets the check this state applies instead of the node's (SetFrozenAddressCheck), nil to go
+// back to it: a state that checks a block of another height than the head's (a fork's block) follows that height's
+// rules.
+func (s *StateDB) SetFrozenAddressCheck(check func(addr common.Address) bool) {
+	s.frozenCheck = check
+}
+
+func (s *StateDB) isFrozen(addr common.Address) bool {
+	if s.frozenCheck != nil {
+		return s.frozenCheck(addr)
+	}
 	return frozenAddressCheck != nil && frozenAddressCheck(addr)
 }
 
@@ -89,6 +99,9 @@ type StateDB struct {
 
 	contractStoreCache map[string]*contractStoreValue
 	contractCodeCache  map[common.Hash][]byte
+
+	// frozenCheck replaces the node's frozen address check for this state (SetFrozenAddressCheck); nil: the node's.
+	frozenCheck func(addr common.Address) bool
 
 	stateGlobal            *stateGlobal
 	stateGlobalDirty       bool
@@ -341,7 +354,7 @@ func (s *StateDB) ClearAccount(addr common.Address) {
 
 // AddBalance adds amount to the account associated with addr
 func (s *StateDB) AddBalance(addr common.Address, amount *big.Int) {
-	if isFrozen(addr) {
+	if s.isFrozen(addr) {
 		return
 	}
 	stateObject := s.GetOrNewAccountObject(addr)
@@ -396,21 +409,21 @@ func (s *StateDB) GodAddress() common.Address {
 }
 
 func (s *StateDB) AddStake(address common.Address, intStake *big.Int) {
-	if isFrozen(address) {
+	if s.isFrozen(address) {
 		return
 	}
 	s.GetOrNewIdentityObject(address).AddStake(intStake)
 }
 
 func (s *StateDB) AddReplenishedStake(address common.Address, intStake *big.Int) {
-	if isFrozen(address) {
+	if s.isFrozen(address) {
 		return
 	}
 	s.GetOrNewIdentityObject(address).AddReplenishedStake(intStake)
 }
 
 func (s *StateDB) AddLockedStake(address common.Address, amount *big.Int) {
-	if isFrozen(address) {
+	if s.isFrozen(address) {
 		return
 	}
 	s.GetOrNewIdentityObject(address).AddLockedStake(amount)

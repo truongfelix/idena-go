@@ -148,7 +148,12 @@ func ValidateTx(appState *appstate.AppState, tx *types.Transaction, minFeePerGas
 		return InvalidSignature
 	}
 
-	if appCfg != nil && (appCfg.Consensus.IsFrozenAddress(sender) || tx.To != nil && appCfg.Consensus.IsFrozenAddress(*tx.To)) {
+	// The rules of the block the state is used for (a fork's block below the node's last upgrade), else the node's.
+	var running *config.ConsensusConf
+	if appCfg != nil {
+		running = appCfg.Consensus
+	}
+	if rules := appState.Consensus(running); rules.IsFrozenAddress(sender) || tx.To != nil && rules.IsFrozenAddress(*tx.To) {
 		return FrozenAddress
 	}
 

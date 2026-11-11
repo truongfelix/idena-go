@@ -46,6 +46,12 @@ var (
 
 	preliminaryConsVersionKey = []byte("pv")
 
+	// consensusUpgradeHeightKey holds the height of the block that brought the stored consensus version (the rules
+	// change after it); preliminaryConsUpgradeHeightKey the same for the chain a fast sync downloads.
+	consensusUpgradeHeightKey = []byte("vh")
+
+	preliminaryConsUpgradeHeightKey = []byte("pvh")
+
 	applyTxLogPrefix = []byte("applytxlog")
 
 	blackListedTxPrefix = []byte("blacktx")

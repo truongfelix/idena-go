@@ -114,6 +114,7 @@ func (fs *fastSync) tryUpgradeConsensus(header *types.Header) {
 		fs.log.Info("Detect upgrade block while fast syncing", "upgrade", fs.upgrader.Target())
 		fs.upgradeConsensusTo(header.ProposedHeader.Upgrade)
 		fs.chain.WritePreliminaryConsensusVersion(header.ProposedHeader.Upgrade)
+		fs.chain.WritePreliminaryConsensusUpgradeHeight(header.Height())
 	}
 }
 
@@ -452,6 +453,13 @@ func (fs *fastSync) postConsuming() (err error) {
 
 	if err := fs.chain.AtomicSwitchToPreliminary(fs.manifest); err != nil {
 		return err
+	}
+	// The node now follows the downloaded chain: the rules from before its last upgrade are those a fork or a reset
+	// below that upgrade's block goes back to.
+	if fs.prevConfig != nil {
+		running := fs.chain.Config().Consensus
+		fs.chain.Config().ConsensusBeforeUpgrade = config.UpgradedRules(fs.prevConfig, running.Version-1)
+		fs.prevConfig = nil
 	}
 
 	fs.bus.Publish(events.FastSyncCompletedEvent{})

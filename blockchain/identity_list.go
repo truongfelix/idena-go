@@ -24,7 +24,7 @@ func isIdentityListBlock(cfg *config.ConsensusConf, flags types.BlockFlag) bool 
 // empty, the same on every node: no state holds one identity twice, and the index's 256 KiB hold the CIDs of about
 // 7,000 pages, 7 million identities.
 func (chain *Blockchain) buildIdentityList(appState *appstate.AppState, block *types.Block) *identitylist.List {
-	if !isIdentityListBlock(chain.config.Consensus, block.Header.Flags()) {
+	if !isIdentityListBlock(chain.consensusRules(appState), block.Header.Flags()) {
 		return nil
 	}
 	list, err := identitylist.FromState(block.Height(), appState.State)
