@@ -673,13 +673,12 @@ func (r *Repo) SetHeadAndConsensus(height uint64, version uint32, upgradeHeight 
 	if hash == (common.Hash{}) {
 		return fmt.Errorf("missing canonical header at height %d", height)
 	}
-	header := r.ReadBlockHeader(hash)
-	if header == nil {
+	if r.ReadBlockHeader(hash) == nil {
 		return fmt.Errorf("missing block header at height %d", height)
 	}
 	batch := r.db.NewBatch()
 	defer batch.Close()
-	r.WriteHead(batch, header)
+	r.SetHead(batch, height)
 	r.WriteConsensusVersion(batch, version)
 	r.WriteConsensusUpgradeHeight(batch, upgradeHeight)
 	return batch.WriteSync()

@@ -185,20 +185,23 @@ func TestResetAboveConsensusUpgradeKeepsRules(t *testing.T) {
 	require.Equal(t, upgradeHeight, chain.repo.ReadConsensusUpgradeHeight())
 }
 
-// A reset below an upgrade whose previous rules the node does not know (none stored by this build) is refused before
-// the state moves.
-func TestResetBelowUnknownConsensusUpgradeRefused(t *testing.T) {
+// A reset below an upgrade whose previous rules the node did not keep (a config built without the stored version)
+// goes back to the built-in rules of the version below, with the node's own setting kept.
+func TestResetBelowConsensusUpgradeWithoutKeptRules(t *testing.T) {
 	key, _ := crypto.GenerateKey()
 	coinbase := crypto.PubkeyToAddress(key.PublicKey)
 	chain, _ := NewCustomTestBlockchainWithConfig(2, 0, key, forkTestConfig(coinbase))
 	defer chain.SecStore().Destroy()
 	chain.config.Consensus.UpgradeIntervalBeforeValidation = 0
 	chain.GenerateBlocks(3, 0)
-	head := chain.Head.Height()
+	require.Equal(t, config.ConsensusV13, chain.config.Consensus.Version)
 	chain.config.ConsensusBeforeUpgrade = nil
 
 	_, err := chain.ResetTo(1)
-	require.ErrorContains(t, err, "rules before it are unknown")
-	require.Equal(t, head, chain.Head.Height())
-	require.Equal(t, config.ConsensusV13, chain.config.Consensus.Version)
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), chain.Head.Height())
+	require.Equal(t, config.ConsensusV12, chain.config.Consensus.Version)
+	require.False(t, chain.config.Consensus.EnableUpgrade13)
+	require.True(t, chain.config.Consensus.Automine, "the node's own setting was lost")
+	require.Equal(t, uint32(config.ConsensusV12), chain.repo.ReadConsensusVersion())
 }

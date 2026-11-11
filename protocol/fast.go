@@ -112,9 +112,14 @@ func (fs *fastSync) loadValidators() {
 func (fs *fastSync) tryUpgradeConsensus(header *types.Header) {
 	if header.ProposedHeader != nil && header.ProposedHeader.Upgrade == uint32(fs.upgrader.Target()) {
 		fs.log.Info("Detect upgrade block while fast syncing", "upgrade", fs.upgrader.Target())
+		// The height is that of the block whose upgrade the config applies now: a later header that repeats the
+		// target (the config already at it) does not move it.
+		upgraded := fs.chain.Config().Consensus.Version < fs.upgrader.Target()
 		fs.upgradeConsensusTo(header.ProposedHeader.Upgrade)
 		fs.chain.WritePreliminaryConsensusVersion(header.ProposedHeader.Upgrade)
-		fs.chain.WritePreliminaryConsensusUpgradeHeight(header.Height())
+		if upgraded {
+			fs.chain.WritePreliminaryConsensusUpgradeHeight(header.Height())
+		}
 	}
 }
 

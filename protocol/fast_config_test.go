@@ -60,6 +60,9 @@ func TestFastSyncKeepsTheUpgradeHeight(t *testing.T) {
 	fs.tryUpgradeConsensus(&types.Header{ProposedHeader: &types.ProposedHeader{Height: 1234, Upgrade: uint32(config.ConsensusV13)}})
 	require.Equal(t, uint64(1234), chain.ReadPreliminaryConsensusUpgradeHeight())
 	require.Equal(t, config.ConsensusV13, chain.Config().Consensus.Version)
+	// A later header that repeats the target does not move the height.
+	fs.tryUpgradeConsensus(&types.Header{ProposedHeader: &types.ProposedHeader{Height: 2000, Upgrade: uint32(config.ConsensusV13)}})
+	require.Equal(t, uint64(1234), chain.ReadPreliminaryConsensusUpgradeHeight())
 
 	fs.dropPreliminaries()
 	require.Zero(t, chain.ReadPreliminaryConsensusUpgradeHeight())
