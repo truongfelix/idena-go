@@ -43,3 +43,28 @@ func TestFastSyncRestoresConsensusConfigWhenItGivesUp(t *testing.T) {
 
 	require.Equal(t, config.ConsensusV10, chain.Config().Consensus.Version)
 }
+
+// The height of the downloaded chain's upgrade block is kept with its version, and goes to the node's chain with the
+// switch; a fast sync that gives up drops it.
+func TestFastSyncKeepsTheUpgradeHeight(t *testing.T) {
+	chain, appState, _, _ := blockchain.NewTestBlockchain(false, nil)
+	cfg := chain.Config()
+	v12 := *config.ConsensusVersions[config.ConsensusV12]
+	cfg.Consensus = &v12
+	fs := &fastSync{
+		log:      log.New(),
+		chain:    chain.Blockchain,
+		appState: appState,
+		upgrader: upgrade.NewUpgrader(cfg, appState, db.NewMemDB()),
+	}
+	fs.tryUpgradeConsensus(&types.Header{ProposedHeader: &types.ProposedHeader{Height: 1234, Upgrade: uint32(config.ConsensusV13)}})
+	require.Equal(t, uint64(1234), chain.ReadPreliminaryConsensusUpgradeHeight())
+	require.Equal(t, config.ConsensusV13, chain.Config().Consensus.Version)
+	// A later header that repeats the target does not move the height.
+	fs.tryUpgradeConsensus(&types.Header{ProposedHeader: &types.ProposedHeader{Height: 2000, Upgrade: uint32(config.ConsensusV13)}})
+	require.Equal(t, uint64(1234), chain.ReadPreliminaryConsensusUpgradeHeight())
+
+	fs.dropPreliminaries()
+	require.Zero(t, chain.ReadPreliminaryConsensusUpgradeHeight())
+	require.Equal(t, config.ConsensusV12, chain.Config().Consensus.Version)
+}

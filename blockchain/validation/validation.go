@@ -67,6 +67,7 @@ var (
 	WrongEpoch           = errors.New("wrong epoch")
 	InvalidDeployAmount  = errors.New("insufficient amount to create contract")
 	SenderHasPenalty     = errors.New("sender has penalty")
+	FrozenAddress        = errors.New("address is frozen")
 
 	validators map[types.TxType]validator
 )
@@ -145,6 +146,15 @@ func ValidateTx(appState *appstate.AppState, tx *types.Transaction, minFeePerGas
 
 	if sender == (common.Address{}) {
 		return InvalidSignature
+	}
+
+	// The rules of the block the state is used for (a fork's block below the node's last upgrade), else the node's.
+	var running *config.ConsensusConf
+	if appCfg != nil {
+		running = appCfg.Consensus
+	}
+	if rules := appState.Consensus(running); rules.IsFrozenAddress(sender) || tx.To != nil && rules.IsFrozenAddress(*tx.To) {
+		return FrozenAddress
 	}
 
 	if appCfg != nil && appCfg.Consensus.EnableUpgrade11 {

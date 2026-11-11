@@ -3,6 +3,7 @@ package appstate
 import (
 	"github.com/idena-network/idena-go/blockchain/types"
 	"github.com/idena-network/idena-go/common/eventbus"
+	"github.com/idena-network/idena-go/config"
 	"github.com/idena-network/idena-go/core/state"
 	"github.com/idena-network/idena-go/core/validators"
 	models "github.com/idena-network/idena-go/protobuf"
@@ -20,6 +21,10 @@ type AppState struct {
 
 	defaultTree       bool
 	prevPrecommitDiff *state.IdentityStateDiff
+
+	// consensus holds the rules of the block this state is used for when they are not the node's running rules (a
+	// fork's block below the node's last consensus upgrade); nil: the running rules.
+	consensus *config.ConsensusConf
 
 	readonlyStateCache map[uint64]*AppState
 	readonlyStateMutex sync.RWMutex
@@ -44,6 +49,25 @@ func NewAppState(db dbm.DB, bus eventbus.Bus) (*AppState, error) {
 
 func (s *AppState) ProvideIdentityUpdateHook(hook state.IdentityUpdateHook) {
 	s.State.ProvideIdentityUpdateHook(hook)
+}
+
+// SetConsensusRules makes this state follow rules instead of the node's running consensus rules (nil: back to them):
+// Consensus returns them, and the state's balance and stake credits apply their frozen addresses.
+func (s *AppState) SetConsensusRules(rules *config.ConsensusConf) {
+	s.consensus = rules
+	if rules == nil {
+		s.State.SetFrozenAddressCheck(nil)
+		return
+	}
+	s.State.SetFrozenAddressCheck(rules.IsFrozenAddress)
+}
+
+// Consensus returns the rules set by SetConsensusRules, or running when none are.
+func (s *AppState) Consensus(running *config.ConsensusConf) *config.ConsensusConf {
+	if s != nil && s.consensus != nil {
+		return s.consensus
+	}
+	return running
 }
 
 func (s *AppState) ForCheck(height uint64) (*AppState, error) {

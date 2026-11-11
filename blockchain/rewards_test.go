@@ -39,6 +39,16 @@ func successfulInvite(age uint16, epochHeight uint32, penalized bool, address co
 }
 
 func Test_rewardValidIdentities(t *testing.T) {
+	checkRewardValidIdentities(t, false)
+}
+
+// Consensus v13 with auth1's pool frozen (an identity delegated to it before the upgrade, whether or not it is in the
+// validators cache): every reward auth1 earns goes to auth1 itself, the pool receives nothing.
+func Test_rewardValidIdentitiesFrozenPool(t *testing.T) {
+	checkRewardValidIdentities(t, true)
+}
+
+func checkRewardValidIdentities(t *testing.T, frozenPool bool) {
 
 	god := common.Address{0x1}
 
@@ -57,6 +67,12 @@ func Test_rewardValidIdentities(t *testing.T) {
 	conf := GetDefaultConsensusConfig()
 	conf.BlockReward = big.NewInt(5)
 	conf.FinalCommitteeReward = big.NewInt(5)
+	if frozenPool {
+		config.ApplyConsensusVersion(config.ConsensusV13, conf)
+		conf.FrozenAddresses = map[common.Address]struct{}{poolOfAuth1: {}}
+		state.SetFrozenAddressCheck(conf.IsFrozenAddress)
+		defer state.SetFrozenAddressCheck(nil)
+	}
 
 	memdb := db.NewMemDB()
 
@@ -175,7 +191,12 @@ func Test_rewardValidIdentities(t *testing.T) {
 	const stake10Weight = 7.9432823 // 10^0.9
 	reward, stake := splitAndSum(conf, false, stakingReward*stake10Weight, flipReward*12.0, invitationReward)
 
-	require.Equal(t, reward.String(), appState.State.GetBalance(poolOfAuth1).String())
+	if frozenPool {
+		require.Zero(t, appState.State.GetBalance(poolOfAuth1).Sign(), "the frozen pool was paid")
+		require.Equal(t, reward.String(), appState.State.GetBalance(auth1).String(), "auth1 was not paid its own rewards")
+	} else {
+		require.Equal(t, reward.String(), appState.State.GetBalance(poolOfAuth1).String())
+	}
 	require.True(t, new(big.Int).Add(big.NewInt(10), stake).Cmp(appState.State.GetStakeBalance(auth1)) == 0)
 
 	reward, stake = splitAndSum(conf, true, candidateReward)

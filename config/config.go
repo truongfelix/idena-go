@@ -48,6 +48,10 @@ type Config struct {
 	Mempool          *Mempool
 	Database         *DatabaseConfig
 
+	// ConsensusBeforeUpgrade holds the rules from before the last consensus upgrade the chain applied (set at start
+	// with the stored version, and by the chain when it upgrades): blocks up to that upgrade's block follow them.
+	ConsensusBeforeUpgrade *ConsensusConf `json:"-"`
+
 	// nodeKey is the node key given by the app that runs the node (UseNodeKey); nil: the key file.
 	nodeKey *ecdsa.PrivateKey
 }

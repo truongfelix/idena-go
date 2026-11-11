@@ -401,6 +401,15 @@ func (v *ValidatorsCache) PoolSizeExceptNodes(pool common.Address, exceptNodes [
 	return 0
 }
 
+// PoolDelegators returns a copy of the identities delegated to pool, in the cache's order; nil if it is no pool.
+func (v *ValidatorsCache) PoolDelegators(pool common.Address) []common.Address {
+	set, ok := v.pools[pool]
+	if !ok {
+		return nil
+	}
+	return append([]common.Address(nil), set.delegators...)
+}
+
 func (v *ValidatorsCache) IsPool(pool common.Address) bool {
 	_, ok := v.pools[pool]
 	return ok

@@ -324,6 +324,11 @@ type Identity struct {
 	ShardId             uint32          `json:"shardId"`
 	PenaltySeconds      uint16          `json:"penaltySeconds"`
 	DiscriminationFlags []string        `json:"discriminationFlags"`
+	// FlipQualityFlips and FlipQualityPoints are the v13 window of the identity's own flips summed (its last 10
+	// ceremonies with flips): its minted rewards, mining and validation (staking, flips, reports, invitations), scale by
+	// points / flips, whole while flips is 0.
+	FlipQualityFlips  uint32  `json:"flipQualityFlips"`
+	FlipQualityPoints float32 `json:"flipQualityPoints"`
 }
 
 type Flip struct {
@@ -414,28 +419,31 @@ func (api *DnaApi) Identity(address *common.Address) Identity {
 	return convertIdentity(appState.State.Epoch(), *address, appState.State.GetIdentity(*address), flipKeyWordPairs, appState)
 }
 
-func convertIdentity(currentEpoch uint16, address common.Address, data state.Identity, flipKeyWordPairs []int, appState *appstate.AppState) Identity {
-	var s string
-	switch data.State {
+func identityStateName(identityState state.IdentityState) string {
+	switch identityState {
 	case state.Invite:
-		s = "Invite"
+		return "Invite"
 	case state.Candidate:
-		s = "Candidate"
+		return "Candidate"
 	case state.Newbie:
-		s = "Newbie"
+		return "Newbie"
 	case state.Verified:
-		s = "Verified"
+		return "Verified"
 	case state.Suspended:
-		s = "Suspended"
+		return "Suspended"
 	case state.Zombie:
-		s = "Zombie"
+		return "Zombie"
 	case state.Killed:
-		s = "Killed"
+		return "Killed"
 	case state.Human:
-		s = "Human"
+		return "Human"
 	default:
-		s = "Undefined"
+		return "Undefined"
 	}
+}
+
+func convertIdentity(currentEpoch uint16, address common.Address, data state.Identity, flipKeyWordPairs []int, appState *appstate.AppState) Identity {
+	s := identityStateName(data.State)
 
 	var flags []string
 	if data.LastValidationStatus.HasFlag(state.AllFlipsNotQualified) {
@@ -489,6 +497,7 @@ func convertIdentity(currentEpoch uint16, address common.Address, data state.Ide
 	}
 
 	totalPoints, totalFlips := common.CalculateIdentityScores(data.Scores, data.GetShortFlipPoints(), data.QualifiedFlips)
+	fqFlips, fqPoints2 := data.FlipQuality()
 
 	isOnline := appState.ValidatorsCache.IsOnlineIdentity(address)
 	hasPendingStatusSwitch := appState.State.HasStatusSwitchAddresses(address)
@@ -573,6 +582,8 @@ func convertIdentity(currentEpoch uint16, address common.Address, data state.Ide
 		ShardId:             uint32(data.ShiftedShardId()),
 		PenaltySeconds:      penaltySeconds,
 		DiscriminationFlags: convertedDiscriminationFlags,
+		FlipQualityFlips:    fqFlips,
+		FlipQualityPoints:   float32(fqPoints2) / 2,
 	}
 }
 

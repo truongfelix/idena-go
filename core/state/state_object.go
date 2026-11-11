@@ -478,6 +478,9 @@ type Identity struct {
 	penaltySeconds       uint16
 	penaltyTimestamp     int64
 	lockedStake          *big.Int
+	// flipQuality is the v13 window of the identity's own flips: a pair (flips made, flip points x2) per ceremony in
+	// which it made flips, oldest first, at most FlipQualityCeremonies pairs (flip_quality.go).
+	flipQuality []byte
 	// do not use directly
 	ShardId common.ShardId
 
@@ -521,6 +524,7 @@ func (i *Identity) ToBytes() ([]byte, error) {
 		PenaltySeconds:      uint32(i.penaltySeconds),
 		PenaltyTimestamp:    i.penaltyTimestamp,
 		UndelegationEpoch:   uint32(i.undelegationEpoch),
+		FlipQuality:         i.flipQuality,
 	}
 	if i.delegatee != nil {
 		protoIdentity.Delegatee = i.delegatee.Bytes()
@@ -576,6 +580,7 @@ func (i *Identity) FromBytes(data []byte) error {
 	i.ShardId = common.ShardId(protoIdentity.ShardId)
 	i.penaltySeconds = uint16(protoIdentity.PenaltySeconds)
 	i.penaltyTimestamp = protoIdentity.PenaltyTimestamp
+	i.flipQuality = protoIdentity.FlipQuality
 	for idx := range protoIdentity.Flips {
 		i.Flips = append(i.Flips, IdentityFlip{
 			Cid:  protoIdentity.Flips[idx].Cid,

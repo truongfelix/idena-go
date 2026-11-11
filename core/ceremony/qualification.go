@@ -210,6 +210,7 @@ func (q *qualification) qualifyFlips(totalFlipsCount uint, candidates []*candida
 			reportCommitteeSize = data[flipIdx].reportCommitteeSize
 		}
 		result[flipIdx] = q.qualifyOneFlip(data[flipIdx].answers, reportCnt, totalGradeScore, approveCnt, reportCommitteeSize, gradeScoreCommitteeSize)
+		result[flipIdx].answersCount = len(data[flipIdx].answers)
 		if result[flipIdx].grade != types.GradeReported {
 			reportersToReward.deleteFlip(flipIdx)
 		}
