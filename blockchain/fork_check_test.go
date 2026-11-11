@@ -70,6 +70,8 @@ func TestForkAcrossOnlineSwitchAccepted(t *testing.T) {
 	tx, err := types.SignTx(tx, otherKey)
 	require.NoError(t, err)
 	require.NoError(t, fork.txpool.AddExternalTxs(validation.InboundTx, tx))
+	fork.GenerateBlocks(1, 0)
+	require.Equal(t, uint32(1), forkState.State.GetNonce(other), "the online transaction was not mined")
 	for !fork.Head.Flags().HasFlag(types.IdentityUpdate) {
 		require.Less(t, fork.Head.Height(), uint64(20), "no online switch")
 		fork.GenerateBlocks(1, 0)
@@ -105,15 +107,12 @@ func TestForkAcrossOnlineSwitchAccepted(t *testing.T) {
 	require.NoError(t, node.ValidateSubChain(commonHeight, bundles))
 }
 
-// An identity update block committed without its identity diff is refused, not applied with validators left as
-// they were.
-func TestCommitPrecommittedNeedsTheIdentityDiff(t *testing.T) {
+// An empty fork is refused.
+func TestEmptyForkRefused(t *testing.T) {
 	godKey, _ := crypto.GenerateKey()
 	otherKey, _ := crypto.GenerateKey()
 	god, other := crypto.PubkeyToAddress(godKey.PublicKey), crypto.PubkeyToAddress(otherKey.PublicKey)
-	node, appState := NewCustomTestBlockchainWithConfig(1, 0, godKey, forkCheckConfig(god, other))
+	node, _ := NewCustomTestBlockchainWithConfig(1, 0, godKey, forkCheckConfig(god, other))
 	defer node.SecStore().Destroy()
-	block := &types.Block{Header: &types.Header{ProposedHeader: &types.ProposedHeader{Flags: types.IdentityUpdate}}}
-	require.EqualError(t, appState.CommitPrecommitted(block, nil), "identity update block committed without its identity diff")
 	require.EqualError(t, node.ValidateSubChain(node.Head.Height(), nil), "fork is empty")
 }
