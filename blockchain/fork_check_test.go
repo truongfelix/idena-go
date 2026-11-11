@@ -42,10 +42,10 @@ func forkCheckConfig(god, other common.Address) *config.Config {
 
 func copyWithKey(t *testing.T, chain *TestBlockchain, cfg *config.Config, key *ecdsa.PrivateKey) (*TestBlockchain, *appstate.AppState) {
 	secStore := secstore.NewSecStore()
+	t.Cleanup(secStore.Destroy)
 	secStore.AddKey(crypto.FromECDSA(key))
 	copied, appState, err := chain.CopyWith(cfg, secStore)
 	require.NoError(t, err)
-	t.Cleanup(secStore.Destroy)
 	return copied, appState
 }
 
@@ -79,6 +79,10 @@ func TestForkAcrossOnlineSwitchAccepted(t *testing.T) {
 
 	proposer, _ := copyWithKey(t, fork, forkCheckConfig(god, other), otherKey)
 	proposer.GenerateBlocks(2, 0)
+
+	// The node's own branch above the common height: the fork check starts from an older state than its head.
+	node.GenerateBlocks(3, 0)
+	require.Greater(t, node.Head.Height(), commonHeight+1)
 	require.Equal(t, other, proposer.Head.Coinbase())
 
 	var bundles []types.BlockBundle

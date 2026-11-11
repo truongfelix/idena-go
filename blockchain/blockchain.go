@@ -2762,7 +2762,8 @@ func (chain *Blockchain) ValidateSubChain(startHeight uint64, blocks []types.Blo
 	prevBlock := chain.GetBlockHeaderByHeight(startHeight)
 
 	for _, b := range blocks {
-		if _, err := chain.validateBlock(checkState, b.Block, prevBlock, nil, false); err != nil {
+		result, err := chain.validateBlock(checkState, b.Block, prevBlock, nil, false)
+		if err != nil {
 			return err
 		}
 		if b.Block.Header.Flags().HasFlag(types.IdentityUpdate) {
@@ -2775,9 +2776,9 @@ func (chain *Blockchain) ValidateSubChain(startHeight uint64, blocks []types.Blo
 				return err
 			}
 		}
-		// The block check precommitted the state: commit with the identity diff it kept, so that the validators
-		// follow the block's online switches (as the full sync does). Commit would diff again and find nothing.
-		if err := checkState.FinalizePrecommit(b.Block); err != nil {
+		// The block check precommitted the state: commit with the identity diff it returned, so that the
+		// validators follow the block's online switches.
+		if err := checkState.CommitPrecommitted(b.Block, result.identityStateDiff); err != nil {
 			return err
 		}
 		prevBlock = b.Block.Header

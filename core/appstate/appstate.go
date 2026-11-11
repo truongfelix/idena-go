@@ -157,6 +157,12 @@ func (s *AppState) Precommit() ([]*state.StateTreeDiff, *state.IdentityStateDiff
 }
 
 func (s *AppState) FinalizePrecommit(block *types.Block) error {
+	return s.CommitPrecommitted(block, s.prevPrecommitDiff)
+}
+
+// CommitPrecommitted commits a state that Precommit already diffed, and refreshes the validators from diff, the
+// identity diff that precommit returned: Commit would diff a second time, find no change and leave them as they were.
+func (s *AppState) CommitPrecommitted(block *types.Block, diff *state.IdentityStateDiff) error {
 	_, _, _, err := s.State.Commit(true)
 	if err != nil {
 		return err
@@ -167,7 +173,7 @@ func (s *AppState) FinalizePrecommit(block *types.Block) error {
 	}
 
 	if block != nil {
-		s.ValidatorsCache.RefreshIfUpdated(s.State.GodAddress(), block, s.prevPrecommitDiff)
+		s.ValidatorsCache.RefreshIfUpdated(s.State.GodAddress(), block, diff)
 	}
 
 	return err
