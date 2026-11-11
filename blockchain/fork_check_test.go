@@ -83,6 +83,8 @@ func TestForkAcrossOnlineSwitchAccepted(t *testing.T) {
 	// The node's own branch above the common height: the fork check starts from an older state than its head.
 	node.GenerateBlocks(3, 0)
 	require.Greater(t, node.Head.Height(), commonHeight+1)
+	require.NotEqual(t, fork.GetBlockByHeight(commonHeight+1).Hash(), node.GetBlockByHeight(commonHeight+1).Hash(),
+		"the node's branch is the fork itself")
 	require.Equal(t, other, proposer.Head.Coinbase())
 
 	var bundles []types.BlockBundle
@@ -101,4 +103,17 @@ func TestForkAcrossOnlineSwitchAccepted(t *testing.T) {
 	}
 	require.Greater(t, proposer.Head.Height(), switchHeight)
 	require.NoError(t, node.ValidateSubChain(commonHeight, bundles))
+}
+
+// An identity update block committed without its identity diff is refused, not applied with validators left as
+// they were.
+func TestCommitPrecommittedNeedsTheIdentityDiff(t *testing.T) {
+	godKey, _ := crypto.GenerateKey()
+	otherKey, _ := crypto.GenerateKey()
+	god, other := crypto.PubkeyToAddress(godKey.PublicKey), crypto.PubkeyToAddress(otherKey.PublicKey)
+	node, appState := NewCustomTestBlockchainWithConfig(1, 0, godKey, forkCheckConfig(god, other))
+	defer node.SecStore().Destroy()
+	block := &types.Block{Header: &types.Header{ProposedHeader: &types.ProposedHeader{Flags: types.IdentityUpdate}}}
+	require.EqualError(t, appState.CommitPrecommitted(block, nil), "identity update block committed without its identity diff")
+	require.EqualError(t, node.ValidateSubChain(node.Head.Height(), nil), "fork is empty")
 }

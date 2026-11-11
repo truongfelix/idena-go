@@ -163,6 +163,9 @@ func (s *AppState) FinalizePrecommit(block *types.Block) error {
 // CommitPrecommitted commits a state that Precommit already diffed, and refreshes the validators from diff, the
 // identity diff that precommit returned: Commit would diff a second time, find no change and leave them as they were.
 func (s *AppState) CommitPrecommitted(block *types.Block, diff *state.IdentityStateDiff) error {
+	if diff == nil && block != nil && block.Header.Flags().HasFlag(types.IdentityUpdate) {
+		return errors.New("identity update block committed without its identity diff")
+	}
 	_, _, _, err := s.State.Commit(true)
 	if err != nil {
 		return err

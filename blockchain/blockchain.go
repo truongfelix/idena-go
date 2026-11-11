@@ -2755,6 +2755,9 @@ func (chain *Blockchain) GenesisInfo() *types.GenesisInfo {
 }
 
 func (chain *Blockchain) ValidateSubChain(startHeight uint64, blocks []types.BlockBundle) error {
+	if len(blocks) == 0 {
+		return errors.New("fork is empty")
+	}
 	checkState, err := chain.appState.ForCheckWithOverwrite(startHeight)
 	if err != nil {
 		return err
