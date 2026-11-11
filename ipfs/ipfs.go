@@ -415,6 +415,30 @@ func (p *ipfsProxy) GetWithSizeLimit(key []byte, dataType DataType, maxSize int6
 	return p.get(path.FromCid(c), dataType, maxSize)
 }
 
+// bitswapState is what bitswap itself sees, as log fields: its wantlist, the messages (any peer's, wants
+// included) and blocks it received since the start, and the peers its server side keeps a ledger for (peers it
+// exchanged wants or blocks with, not every connected one; left out without a server side). A read that times
+// out while the swarm has peers and these stay still points at bitswap rather than at the data.
+func (p *ipfsProxy) bitswapState() []interface{} {
+	bs := p.node.Bitswap
+	if bs == nil {
+		return nil
+	}
+	st, err := bs.Stat()
+	var fields []interface{}
+	if st != nil {
+		fields = append(fields, "wants", len(st.Wantlist), "bitswapMessages", st.MessagesReceived,
+			"blocksReceived", st.BlocksReceived)
+		if bs.Server != nil {
+			fields = append(fields, "bitswapLedgerPeers", len(st.Peers))
+		}
+	}
+	if err != nil {
+		fields = append(fields, "bitswapStatErr", err)
+	}
+	return fields
+}
+
 func (p *ipfsProxy) get(path path.Path, dataType DataType, maxSize int64) ([]byte, error) {
 	p.rwLock.RLock()
 	defer p.rwLock.RUnlock()
@@ -434,7 +458,8 @@ func (p *ipfsProxy) get(path path.Path, dataType DataType, maxSize int64) ([]byt
 	}
 	if err != nil {
 		info, _ := api.Swarm().Peers(context.Background())
-		p.log.Error("fail to read from ipfs", "cid", path.String(), "err", err, "peers", len(info))
+		p.log.Error("fail to read from ipfs", append([]interface{}{"cid", path.String(), "err", err, "peers", len(info)},
+			p.bitswapState()...)...)
 		return nil, err
 	}
 	file := files.ToFile(f)
@@ -463,6 +488,10 @@ func (p *ipfsProxy) get(path path.Path, dataType DataType, maxSize int64) ([]byt
 	_, err = buf.ReadFrom(file)
 
 	if err != nil {
+		// The root was found but a later block was not (a body over several blocks).
+		info, _ := api.Swarm().Peers(context.Background())
+		p.log.Error("fail to read from ipfs", append([]interface{}{"cid", path.String(), "err", err,
+			"peers", len(info)}, p.bitswapState()...)...)
 		return nil, err
 	}
 	p.log.Debug("read data from ipfs", "cid", path.String())

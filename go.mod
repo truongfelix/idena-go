@@ -14,7 +14,7 @@ require (
 	github.com/google/tink/go v1.7.0
 	github.com/ipfs/go-cid v0.6.2
 	github.com/ipfs/kubo v0.42.0
-	github.com/klauspost/compress v1.19.0
+	github.com/klauspost/compress v1.20.2
 	github.com/libp2p/go-libp2p-pubsub v0.17.0
 	github.com/libp2p/go-msgio v0.3.0
 	github.com/libp2p/go-yamux v1.4.1
@@ -102,7 +102,7 @@ require (
 	github.com/gammazero/chanqueue v1.1.2 // indirect
 	github.com/gammazero/deque v1.2.1 // indirect
 	github.com/getsentry/sentry-go v0.27.0 // indirect
-	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
+	github.com/go-jose/go-jose/v4 v4.1.6 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect

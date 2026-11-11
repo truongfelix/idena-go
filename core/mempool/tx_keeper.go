@@ -35,10 +35,33 @@ type txKeeper struct {
 	datadir    string
 	mutex      sync.RWMutex
 	persistMu  sync.Mutex
+	stop       chan struct{}
+	stopOnce   sync.Once
+	loops      sync.WaitGroup
 }
 
 func NewTxKeeper(datadir string) *txKeeper {
-	return &txKeeper{datadir: datadir, txs: make(map[common.Hash]hexutil.Bytes), ch: make(chan interface{}, 20000)}
+	return &txKeeper{datadir: datadir, txs: make(map[common.Hash]hexutil.Bytes), ch: make(chan interface{}, 20000),
+		stop: make(chan struct{})}
+}
+
+// Stop ends the keeper's loops and returns once they have: no save of txs.json is under way or will start.
+// The transactions not saved yet are not saved.
+func (k *txKeeper) Stop() {
+	k.stopOnce.Do(func() { close(k.stop) })
+	k.loops.Wait()
+}
+
+// wait pauses for d, or until the keeper stops; it returns false when it stopped.
+func (k *txKeeper) wait(d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-k.stop:
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 func (k *txKeeper) persist() error {
@@ -118,6 +141,7 @@ func (k *txKeeper) Load() {
 	}
 	k.mutex.Unlock()
 
+	k.loops.Add(2)
 	go k.loop()
 	go k.persistLoop()
 }
@@ -202,9 +226,14 @@ func (k *txKeeper) Clear() {
 }
 
 func (k *txKeeper) loop() {
-
+	defer k.loops.Done()
 	for {
-		cmd := <-k.ch
+		var cmd interface{}
+		select {
+		case <-k.stop:
+			return
+		case cmd = <-k.ch:
+		}
 
 		if add, ok := cmd.(*addCommand); ok {
 			k.addTx(add.tx)
@@ -217,12 +246,15 @@ func (k *txKeeper) loop() {
 }
 
 func (k *txKeeper) persistLoop() {
+	defer k.loops.Done()
 	for {
-		time.Sleep(time.Millisecond * 100)
+		if !k.wait(time.Millisecond * 100) {
+			return
+		}
 		if k.hasPendingChanges() {
 			err := k.persist()
-			if err == nil {
-				time.Sleep(txKeeperPersistInterval)
+			if err == nil && !k.wait(txKeeperPersistInterval) {
+				return
 			}
 		}
 	}
