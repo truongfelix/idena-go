@@ -1353,8 +1353,8 @@ github.com/truongfelix/go-libp2p-kad-dht v0.41.1-0.20260924080750-83f1403bcb17 h
 github.com/truongfelix/go-libp2p-kad-dht v0.41.1-0.20260924080750-83f1403bcb17/go.mod h1:2qc4QGLvmIdznYbNg++FF76vp4q2SaBZyr76jHV8xgs=
 github.com/truongfelix/iavl v0.12.3-0.20211223100228-a33b117aa31e h1:4pvmOpoek6x617ukQ7zX/j8ifKtezhvWl46NbZtqfR0=
 github.com/truongfelix/iavl v0.12.3-0.20211223100228-a33b117aa31e/go.mod h1:++H8jTv9JFwzyZ55ahnGcGCDjhxJacSYbZKojVdVPOo=
-github.com/truongfelix/idena-wasm-binding v0.0.0-20260923235352-01ccca5cc3c9 h1:0nz/T+pwHo3aFzHSM4iPzdmQQBLi8TsXAkwvEtz/7i8=
-github.com/truongfelix/idena-wasm-binding v0.0.0-20260923235352-01ccca5cc3c9/go.mod h1:Gaqs/PYOTw9Jr1VQPlR0Be+CcgsuP4sdGmTzzQ5hvQ0=
+github.com/truongfelix/idena-wasm-binding v0.0.0-20261113113737-8772e6200afe h1:FGOiSTkNDBnCU+ZW8jRm5rPinwXwjdlRODFSMk412ws=
+github.com/truongfelix/idena-wasm-binding v0.0.0-20261113113737-8772e6200afe/go.mod h1:Gaqs/PYOTw9Jr1VQPlR0Be+CcgsuP4sdGmTzzQ5hvQ0=
 github.com/ttacon/chalk v0.0.0-20160626202418-22c06c80ed31/go.mod h1:onvgF043R+lC5RZ8IT9rBXDaEDnpnw/Cl+HFiw+v/7Q=
 github.com/tv42/httpunix v0.0.0-20150427012821-b75d8614f926/go.mod h1:9ESjWnEqriFuLhtthL60Sar/7RFoluCcXsuvEwTV5KM=
 github.com/tv42/httpunix v0.0.0-20191220191345-2ba4b9c3382c/go.mod h1:hzIxponao9Kjc7aWznkXaL4U4TWaDSs8zcsY4Ka08nM=

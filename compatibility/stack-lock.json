@@ -27,13 +27,13 @@
       "name": "idena-wasm-binding",
       "role": "native-binding",
       "repository": "https://github.com/truongfelix/idena-wasm-binding.git",
-      "commit": "01ccca5cc3c94917725964541954a9f20e3412e9"
+      "commit": "8772e6200afe6e0c670b945f275c10ced48bdbe2"
     },
     {
       "name": "idena-wasm",
       "role": "contract-runtime",
       "repository": "https://github.com/truongfelix/idena-wasm.git",
-      "commit": "b686ed84d26b43dfa74ea12a0d3af1b120a50598"
+      "commit": "e2f8f9db9019a51d39c3cad36f74bdbb341748e6"
     },
     {
       "name": "wasmer",
@@ -57,33 +57,33 @@
   "artifacts": [
     {
       "name": "libidena_wasm_linux_amd64.a",
-      "sha256": "069a76fa8eb121ecf120ead2a7a7e2e40cf6ceb3d983dd37d0f475a9675d9eac"
+      "sha256": "87fe8bc6e619c2c34c677fdba686aae917c68bb7ae56c3b31d834b8de55b168c"
     },
     {
       "name": "libidena_wasm_linux_aarch64.a",
-      "sha256": "c9a57082ddba1341a24b99f92ed818b0b51ee98ae00c049ba8a384d18957001e"
+      "sha256": "f22ae4a8074275ef6ad50f4f7585852d6b8271e1b08319846eeacb9f2b4b9393"
     },
     {
       "name": "libidena_wasm_darwin_amd64.a",
-      "sha256": "8991e4d8d1ab18d89c962903405a0f510b85305506eddef7a463318099416ca3"
+      "sha256": "70de5e65c3875b0bba38e973c9733c3b9d1d46d4ae4f5360322ef6a7e49b4582"
     },
     {
       "name": "libidena_wasm_darwin_arm64.a",
-      "sha256": "d8d4f1bf2593840f5a2092b6967c16a5d3bd1a860cddbd6559a14e062d641eaf"
+      "sha256": "aeed334895ae1fef4236b7f6328cd2347590e94d1c03576efb4798840283941c"
     },
     {
       "name": "libidena_wasm_windows_amd64.a",
-      "sha256": "8da1eb88a045fbc2cd4448a89acb11d7ce16568768fe2d71f461644c82b5c3df"
+      "sha256": "14a6ab621374ace4536d8766207672327351914ab2109352fa3207e638005527"
     }
   ],
   "consumerPins": {
     "idena-desktop": {
       "idena-go": "43da1bdcff0feb94ac993c8b48b3bdaaa04aaea9",
-      "idena-wasm-binding": "01ccca5cc3c94917725964541954a9f20e3412e9"
+      "idena-wasm-binding": "8772e6200afe6e0c670b945f275c10ced48bdbe2"
     },
     "idena-social-contract-runner": {
       "idena-go": "43da1bdcff0feb94ac993c8b48b3bdaaa04aaea9",
-      "idena-wasm-binding": "01ccca5cc3c94917725964541954a9f20e3412e9"
+      "idena-wasm-binding": "8772e6200afe6e0c670b945f275c10ced48bdbe2"
     },
     "idena-social-ui": {
       "idena-sdk-js-lite": "cc6e69b9b87aa381398b7839050a4640f46eb5ba"
