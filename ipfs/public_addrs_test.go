@@ -4,6 +4,7 @@ package ipfs
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"slices"
 	"testing"
@@ -117,17 +118,26 @@ func TestPublicAddrsAnnouncedToPeersAtRuntime(t *testing.T) {
 		100*time.Millisecond, "cleared: %v", node.Addrs())
 }
 
-// The address from the settings is announced from the start by a node built as the proxy builds it; a bad list
-// does not stop the node and announces nothing.
+// The address from the settings is announced from the start by a node built as the proxy builds it, with a static
+// port; a bad list or a port that may move does not stop the node and announces nothing.
 func TestNodeAnnouncesPublicAddrsFromConfig(t *testing.T) {
 	const routerAddr = "/ip4/82.123.115.203/tcp/4013"
-	// Free ports from the system: the shared test node moves to 4013, 4014... after 2 minutes without peers.
-	newNode := func(addrs []string) (*publicAddrs, host.Host) {
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
-		require.NoError(t, err)
-		port := ln.Addr().(*net.TCPAddr).Port
-		require.NoError(t, ln.Close())
+	// A free port below 32768, outside the range the system gives outgoing connections (lessons L-69), and away from
+	// the shared test node's 4012, 4013... (it moves after 2 minutes without peers).
+	freePort := func() int {
+		for port := 29000; port < 32000; port++ {
+			if ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port)); err == nil {
+				_ = ln.Close()
+				return port
+			}
+		}
+		t.Fatal("no free port")
+		return 0
+	}
+	newNode := func(addrs []string, static bool) (*publicAddrs, host.Host) {
+		port := freePort()
 		cfg := &config.IpfsConfig{
+			StaticPort:  static,
 			SwarmKey:    "9ad6f96bb2b02a7308ad87938d6139a974b550cc029ce416641a60c46db2f530",
 			BootNodes:   []string{},
 			IpfsPort:    port,
@@ -142,33 +152,43 @@ func TestNodeAnnouncesPublicAddrsFromConfig(t *testing.T) {
 		return public, node.PeerHost
 	}
 
-	public, h := newNode([]string{routerAddr})
+	public, h := newNode([]string{routerAddr}, true)
 	require.Equal(t, []string{routerAddr}, public.get())
 	require.Eventually(t, func() bool { return hasAddr(h.Addrs(), routerAddr) }, 15*time.Second,
 		100*time.Millisecond, "announced from the start: %v", h.Addrs())
 
-	bad, h2 := newNode([]string{"/ip4/192.168.1.102/tcp/4014"})
+	moving, _ := newNode([]string{routerAddr}, false)
+	require.Empty(t, moving.get(), "a port that may move announces nothing")
+
+	bad, h2 := newNode([]string{"/ip4/192.168.1.102/tcp/4014"}, true)
 	require.Empty(t, bad.get())
 	require.NoError(t, bad.set([]string{"/ip4/82.123.115.203/tcp/4014"}))
 	require.Eventually(t, func() bool { return hasAddr(h2.Addrs(), "/ip4/82.123.115.203/tcp/4014") },
 		15*time.Second, 100*time.Millisecond, "set at runtime")
 }
 
-// The proxy offers the addresses to the RPC (net_setPublicAddrs) and refuses a bad list.
+// The proxy offers the addresses to the RPC (net_setPublicAddrs) on a static port only, and refuses a bad list.
 func TestIpfsProxyPublicAddrs(t *testing.T) {
-	public, ok := proxy.(PublicAddrs)
-	require.True(t, ok)
-	t.Cleanup(func() { _ = public.SetPublicAddrs(nil) })
-	require.Error(t, public.SetPublicAddrs([]string{"/ip4/10.0.0.1/tcp/4012"}))
-	require.NoError(t, public.SetPublicAddrs([]string{"/ip4/82.123.115.203/tcp/4012"}))
-	require.Equal(t, []string{"/ip4/82.123.115.203/tcp/4012"}, public.PublicAddrs())
-	require.Eventually(t, func() bool { return hasAddr(proxy.Host().Addrs(), "/ip4/82.123.115.203/tcp/4012") },
-		15*time.Second, 100*time.Millisecond, "the shared test node announces it")
+	static := &ipfsProxy{public: &publicAddrs{}, cfg: &config.IpfsConfig{StaticPort: true}, log: log.New()}
+	require.Error(t, static.SetPublicAddrs([]string{"/ip4/10.0.0.1/tcp/4012"}))
+	require.NoError(t, static.SetPublicAddrs([]string{"/ip4/82.123.115.203/tcp/4012"}))
+	require.Equal(t, []string{"/ip4/82.123.115.203/tcp/4012"}, static.PublicAddrs())
+	require.NoError(t, static.SetPublicAddrs(nil))
+	require.Empty(t, static.PublicAddrs())
+
+	moving := &ipfsProxy{public: &publicAddrs{}, cfg: &config.IpfsConfig{}, log: log.New()}
+	require.ErrorIs(t, moving.SetPublicAddrs([]string{"/ip4/82.123.115.203/tcp/4012"}), errNoStaticPort)
+	require.NoError(t, moving.SetPublicAddrs(nil), "clearing is always allowed")
+	require.Empty(t, moving.PublicAddrs())
 }
 
 func TestPublicAddrsAnnouncedOnce(t *testing.T) {
 	p := &publicAddrs{}
 	require.NoError(t, p.set([]string{"/ip4/1.2.3.4/tcp/1", "/ip4/1.2.3.4/tcp/1", "/ip4/5.6.7.8/tcp/2"}))
+	require.Equal(t, []string{"/ip4/1.2.3.4/tcp/1", "/ip4/5.6.7.8/tcp/2"}, p.get(), "a duplicate counts once")
+	require.NoError(t, p.set([]string{"/ip4/1.1.1.1/tcp/1", "/ip4/1.1.1.2/tcp/1", "/ip4/1.1.1.3/tcp/1", "/ip4/1.1.1.4/tcp/1",
+		"/ip4/1.1.1.1/tcp/1"}), "4 addresses and a duplicate are 4")
+	require.NoError(t, p.set([]string{"/ip4/1.2.3.4/tcp/1", "/ip4/5.6.7.8/tcp/2"}))
 	got := p.appendTo([]ma.Multiaddr{ma.StringCast("/ip4/5.6.7.8/tcp/2")})
 	require.Equal(t, []string{"/ip4/5.6.7.8/tcp/2", "/ip4/1.2.3.4/tcp/1"}, func() (out []string) {
 		for _, a := range got {
@@ -176,15 +196,4 @@ func TestPublicAddrsAnnouncedOnce(t *testing.T) {
 		}
 		return
 	}())
-}
-
-func TestPublicAddrsWithoutHolder(t *testing.T) {
-	var p *publicAddrs
-	require.Error(t, p.set([]string{"/ip4/1.2.3.4/tcp/1"}))
-	require.Empty(t, p.get())
-	require.Len(t, p.appendTo([]ma.Multiaddr{ma.StringCast("/ip4/1.2.3.4/tcp/1")}), 1)
-	require.NotNil(t, p.hostOption())
-	proxy := &ipfsProxy{}
-	require.Error(t, proxy.SetPublicAddrs(nil))
-	require.Empty(t, proxy.PublicAddrs())
 }

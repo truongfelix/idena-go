@@ -178,7 +178,7 @@ var (
 	}
 	IpfsPublicAddrFlag = cli.StringFlag{
 		Name:  "ipfspublicaddr",
-		Usage: "Addresses to announce beside the ones the node finds, comma-separated public TCP multiaddrs (/ip4/<address>/tcp/<port>): a port forwarded to this node on the router",
+		Usage: "Addresses to announce beside the ones the node finds, comma-separated public TCP multiaddrs (/ip4/<address>/tcp/<port>): a port forwarded to this node on the router; needs --ipfsportstatic",
 	}
 	IpfsPortStaticFlag = cli.BoolFlag{
 		Name:  "ipfsportstatic",

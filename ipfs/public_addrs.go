@@ -1,7 +1,9 @@
 package ipfs
 
 import (
+	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 
@@ -21,6 +23,10 @@ import (
 // MaxPublicAddrs bounds the addresses a node announces beside the ones libp2p finds itself.
 const MaxPublicAddrs = 4
 
+// errNoStaticPort refuses public addresses on a node whose IPFS port may move (it moves after 2 minutes without
+// peers): a router forwards one fixed port, so an address would soon lead nowhere.
+var errNoStaticPort = errors.New("public addresses need a static IPFS port (--ipfsportstatic)")
+
 // PublicAddrs is the part of an IPFS proxy that announces addresses the node cannot learn by itself: the router port
 // the app opened (UPnP), on the router's public address. libp2p takes a node behind a router as unreachable until
 // its AutoNAT probes say otherwise (every 15 minutes, after 4 peers saw the same address) and announces only relay
@@ -28,7 +34,7 @@ const MaxPublicAddrs = 4
 // stays unknown to the network.
 type PublicAddrs interface {
 	// SetPublicAddrs replaces the announced addresses: public TCP multiaddrs (/ip4/<a>/tcp/<p> or /ip6/...), at most
-	// MaxPublicAddrs; none clears them. Peers learn the change within seconds (identify push), no restart.
+	// MaxPublicAddrs, on a node with a static IPFS port; none clears them. Peers learn the change within seconds (identify push), no restart.
 	SetPublicAddrs(addrs []string) error
 	// PublicAddrs is the announced addresses, as given.
 	PublicAddrs() []string
@@ -41,12 +47,9 @@ type publicAddrs struct {
 	addrs []ma.Multiaddr
 }
 
-// parsePublicAddrs checks each address: a multiaddr, a public IP (not private, loopback or reserved), TCP, no peer id
-// or other part after the port. Any bad one refuses the whole list.
+// parsePublicAddrs checks each address: a multiaddr, a public IP (not private, loopback or reserved), TCP with a port,
+// no peer id or other part after the port. Any bad one refuses the whole list; one given twice counts once.
 func parsePublicAddrs(addrs []string) ([]ma.Multiaddr, error) {
-	if len(addrs) > MaxPublicAddrs {
-		return nil, fmt.Errorf("at most %d public addresses, got %d", MaxPublicAddrs, len(addrs))
-	}
 	parsed := make([]ma.Multiaddr, 0, len(addrs))
 	for _, s := range addrs {
 		a, err := ma.NewMultiaddr(s)
@@ -64,16 +67,23 @@ func parsePublicAddrs(addrs []string) ([]ma.Multiaddr, error) {
 		if port, err := a.ValueForProtocol(ma.P_TCP); err != nil || port == "0" {
 			return nil, fmt.Errorf("public address %q: no port to dial", s)
 		}
-		parsed = append(parsed, a)
+		if !slices.ContainsFunc(parsed, a.Equal) {
+			parsed = append(parsed, a)
+		}
+	}
+	if len(parsed) > MaxPublicAddrs {
+		return nil, fmt.Errorf("at most %d public addresses, got %d", MaxPublicAddrs, len(parsed))
 	}
 	return parsed, nil
 }
 
-// publicAddrsFromConfig takes the addresses of the settings. A bad one must not stop the node: it then starts
-// announcing none, as before, and says why.
+// publicAddrsFromConfig takes the addresses of the settings. A bad one, or a port that may move, must not stop the
+// node: it then starts announcing none, as before, and says why.
 func publicAddrsFromConfig(cfg *config.IpfsConfig, logger log.Logger) *publicAddrs {
 	public := &publicAddrs{}
-	if err := public.set(cfg.PublicAddrs); err != nil {
+	if len(cfg.PublicAddrs) > 0 && !cfg.StaticPort {
+		logger.Warn("Public IPFS addresses ignored", "err", errNoStaticPort)
+	} else if err := public.set(cfg.PublicAddrs); err != nil {
 		logger.Warn("Public IPFS addresses ignored", "err", err)
 	} else if len(cfg.PublicAddrs) > 0 {
 		logger.Info("Public IPFS addresses announced", "addrs", strings.Join(cfg.PublicAddrs, ","))
@@ -82,9 +92,6 @@ func publicAddrsFromConfig(cfg *config.IpfsConfig, logger log.Logger) *publicAdd
 }
 
 func (p *publicAddrs) set(addrs []string) error {
-	if p == nil {
-		return fmt.Errorf("public addresses are not supported by this node")
-	}
 	parsed, err := parsePublicAddrs(addrs)
 	if err != nil {
 		return err
@@ -96,9 +103,6 @@ func (p *publicAddrs) set(addrs []string) error {
 }
 
 func (p *publicAddrs) get() []string {
-	if p == nil {
-		return []string{}
-	}
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	out := make([]string, len(p.addrs))
@@ -110,9 +114,6 @@ func (p *publicAddrs) get() []string {
 
 // appendTo returns addrs with the announced addresses it does not already hold, each once.
 func (p *publicAddrs) appendTo(addrs []ma.Multiaddr) []ma.Multiaddr {
-	if p == nil {
-		return addrs
-	}
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	if len(p.addrs) == 0 {
@@ -142,9 +143,6 @@ func (p *publicAddrs) appendTo(addrs []ma.Multiaddr) []ma.Multiaddr {
 // addresses are announced in any case.
 // It mirrors Kubo v0.42.0 (constructPeerHost) and go-libp2p v0.48.0 (New): compare both on the next upgrade.
 func (p *publicAddrs) hostOption() kubolibp2p.HostOption {
-	if p == nil {
-		return kubolibp2p.DefaultHostOption
-	}
 	return func(id peer.ID, ps peerstore.Peerstore, options ...libp2p.Option) (host.Host, error) {
 		pkey := ps.PrivKey(id)
 		if pkey == nil {

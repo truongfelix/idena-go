@@ -116,6 +116,9 @@ type ipfsProxy struct {
 
 // SetPublicAddrs implements PublicAddrs.
 func (p *ipfsProxy) SetPublicAddrs(addrs []string) error {
+	if len(addrs) > 0 && !p.cfg.StaticPort {
+		return errNoStaticPort
+	}
 	if err := p.public.set(addrs); err != nil {
 		return err
 	}
@@ -263,12 +266,6 @@ func (p *ipfsProxy) changePort() {
 	case <-c.Done():
 		p.log.Error("timeout while stopping IPFS")
 	case <-p.nodeCtx.Done():
-	}
-
-	// The announced addresses lead to the old port: the app sets them again for the new one.
-	if len(p.public.get()) > 0 {
-		_ = p.public.set(nil)
-		p.log.Warn("Public IPFS addresses cleared: the IPFS port changes")
 	}
 
 	for {
