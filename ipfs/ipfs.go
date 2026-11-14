@@ -111,6 +111,28 @@ type ipfsProxy struct {
 	lastPeersUpdatedTime time.Time
 	bus                  eventbus.Bus
 	gcMutex              sync.RWMutex
+	public               *publicAddrs
+}
+
+// SetPublicAddrs implements PublicAddrs.
+func (p *ipfsProxy) SetPublicAddrs(addrs []string) error {
+	if len(addrs) > 0 && !p.cfg.StaticPort {
+		return errNoStaticPort
+	}
+	if err := p.public.set(addrs); err != nil {
+		return err
+	}
+	if len(addrs) == 0 {
+		p.log.Info("Public IPFS addresses cleared")
+	} else {
+		p.log.Info("Public IPFS addresses announced", "addrs", strings.Join(addrs, ","))
+	}
+	return nil
+}
+
+// PublicAddrs implements PublicAddrs.
+func (p *ipfsProxy) PublicAddrs() []string {
+	return p.public.get()
 }
 
 func (p *ipfsProxy) Host() libp2pcore.Host {
@@ -148,7 +170,9 @@ func NewIpfsProxy(cfg *config.IpfsConfig, bus eventbus.Bus) (Proxy, error) {
 
 	logger := log.New()
 
-	node, ctx, cancelCtx, err := createNode(cfg, bus)
+	public := publicAddrsFromConfig(cfg, logger)
+
+	node, ctx, cancelCtx, err := createNode(cfg, bus, public)
 	if err != nil {
 		return nil, err
 	}
@@ -171,13 +195,14 @@ func NewIpfsProxy(cfg *config.IpfsConfig, bus eventbus.Bus) (Proxy, error) {
 		lastPeersUpdatedTime: time.Now().UTC(),
 		nilNode:              nilNode,
 		bus:                  bus,
+		public:               public,
 	}
 
 	go p.watchPeers()
 	return p, nil
 }
 
-func createNode(cfg *config.IpfsConfig, eventBus eventbus.Bus) (*core.IpfsNode, context.Context, context.CancelFunc, error) {
+func createNode(cfg *config.IpfsConfig, eventBus eventbus.Bus, public *publicAddrs) (*core.IpfsNode, context.Context, context.CancelFunc, error) {
 	dataDir, err := filepath.Abs(cfg.DataDir)
 	if err != nil {
 		return nil, nil, func() {}, err
@@ -196,7 +221,7 @@ func createNode(cfg *config.IpfsConfig, eventBus eventbus.Bus) (*core.IpfsNode, 
 
 	ctx, cancelCtx := context.WithCancel(context.Background())
 
-	buildCfg, err := getNodeConfig(dataDir)
+	buildCfg, err := getNodeConfig(dataDir, public)
 	if err != nil {
 		cancelCtx()
 		return nil, nil, func() {}, err
@@ -246,7 +271,7 @@ func (p *ipfsProxy) changePort() {
 	for {
 		p.cfg.IpfsPort += 1
 
-		node, ctx, cancelCtx, err := createNode(p.cfg, p.bus)
+		node, ctx, cancelCtx, err := createNode(p.cfg, p.bus, p.public)
 
 		if err != nil {
 			continue
@@ -797,7 +822,7 @@ func writeSwarmKey(dataDir string, swarmKey string) error {
 	return nil
 }
 
-func getNodeConfig(dataDir string) (*core.BuildCfg, error) {
+func getNodeConfig(dataDir string, public *publicAddrs) (*core.BuildCfg, error) {
 	repo, err := fsrepo.Open(dataDir)
 	if err != nil {
 		return nil, err
@@ -808,6 +833,7 @@ func getNodeConfig(dataDir string) (*core.BuildCfg, error) {
 		Permanent:                   true,
 		Online:                      true,
 		Routing:                     kubolibp2p.DHTOption,
+		Host:                        public.hostOption(),
 		DisableEncryptedConnections: false,
 		ExtraOpts: map[string]bool{
 			"pubsub": true,

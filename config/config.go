@@ -439,6 +439,9 @@ func applyIpfsFlags(ctx *cli.Context, cfg *Config) {
 	if ctx.IsSet(IpfsPortStaticFlag.Name) {
 		cfg.IpfsConf.StaticPort = ctx.Bool(IpfsPortStaticFlag.Name)
 	}
+	if ctx.IsSet(IpfsPublicAddrFlag.Name) {
+		cfg.IpfsConf.PublicAddrs = splitPublicAddrs(ctx.String(IpfsPublicAddrFlag.Name))
+	}
 	if ctx.IsSet(IpfsRoutingFlag.Name) {
 		cfg.IpfsConf.Routing = ctx.String(IpfsRoutingFlag.Name)
 	}
