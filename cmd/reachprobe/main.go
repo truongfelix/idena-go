@@ -47,7 +47,7 @@ func logf(tag, format string, args ...interface{}) {
 func main() {
 	datadir := flag.String("datadir", "", "throwaway IPFS datadir (a new key on first use)")
 	port := flag.Int("port", 40499, "IPFS TCP port")
-	mode := flag.String("mode", "listen", "listen or dial")
+	mode := flag.String("mode", "listen", "listen, dial or identify")
 	target := flag.String("target", "", "dial: peer ids to reach, comma-separated")
 	proto := flag.String("proto", "probe", "dial: probe (the target runs reachprobe) or ping (libp2p ping, any node)")
 	addr := flag.String("addr", "", "dial: optional full multiaddr of the target (relay circuit or direct)")
@@ -90,7 +90,7 @@ func main() {
 	watchEvents(h, *datadir)
 	targets := map[peer.ID]bool{}
 	var targetIDs []peer.ID
-	if *mode == "dial" {
+	if *mode == "dial" || *mode == "identify" || *mode == "dhtwatch" {
 		for _, t := range strings.Split(*target, ",") {
 			id, err := peer.Decode(strings.TrimSpace(t))
 			if err != nil {
@@ -110,6 +110,10 @@ func main() {
 		listen(ctx, h)
 	case "dial":
 		dial(ctx, h, node.Routing.FindPeer, targetIDs, *addr, *proto, *warmup)
+	case "identify":
+		identifyTarget(ctx, h, node.Routing.FindPeer, targetIDs[0], *addr, *warmup)
+	case "dhtwatch":
+		dhtWatch(ctx, h, node.Routing.FindPeer, targetIDs[0], *addr, *warmup)
 	default:
 		logf("FATAL", "unknown mode %q", *mode)
 		os.Exit(2)
