@@ -160,7 +160,7 @@ func TestConfigureIpfsPreservesMalformedExistingConfig(t *testing.T) {
 }
 
 func TestGetNodeConfigReportsOpenFailure(t *testing.T) {
-	_, err := getNodeConfig(filepath.Join(t.TempDir(), "missing"))
+	_, err := getNodeConfig(filepath.Join(t.TempDir(), "missing"), &publicAddrs{})
 	require.Error(t, err)
 }
 

@@ -176,6 +176,10 @@ var (
 		Usage: "IPFS connections above which the connection manager trims down to --ipfslowwater, 0 keeps every connection; overrides the profile",
 		Value: 50,
 	}
+	IpfsPublicAddrFlag = cli.StringFlag{
+		Name:  "ipfspublicaddr",
+		Usage: "Addresses to announce beside the ones the node finds, comma-separated public TCP multiaddrs (/ip4/<address>/tcp/<port>): a port forwarded to this node on the router",
+	}
 	IpfsPortStaticFlag = cli.BoolFlag{
 		Name:  "ipfsportstatic",
 		Usage: "Enable static ipfs port",

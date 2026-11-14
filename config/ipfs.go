@@ -24,6 +24,10 @@ type IpfsConfig struct {
 	// bigger buffer cuts these writes. It costs about 2 times the added buffer in memory (the memtable and
 	// the one being flushed) and applies when the datastore is opened: a change takes a restart.
 	DatastoreWriteBufferMiB int
+	// PublicAddrs are announced to peers beside the addresses libp2p finds itself: the router port the app opened, on
+	// the router's public address (/ip4/<address>/tcp/<port>). Public TCP addresses only, at most 4; a bad list is
+	// ignored with a warning. The apps change them while the node runs with net_setPublicAddrs.
+	PublicAddrs []string
 	// NextValidation is read from the chain at start (zero: unknown), never saved: an IPFS repository left in Badger
 	// is not converted at a start near a validation, since the node cannot validate while it converts.
 	NextValidation time.Time `json:"-"`

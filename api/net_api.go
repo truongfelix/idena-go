@@ -1,6 +1,8 @@
 package api
 
 import (
+	"errors"
+
 	"github.com/idena-network/idena-go/ipfs"
 	"github.com/idena-network/idena-go/protocol"
 )
@@ -45,4 +47,24 @@ func (api *NetApi) IpfsAddress() string {
 
 func (api *NetApi) AddPeer(url string) error {
 	return api.pm.AddPeer(url)
+}
+
+// SetPublicAddrs replaces the addresses the node announces beside the ones it finds itself (net_setPublicAddrs): the
+// router port the app opened, as /ip4/<public address>/tcp/<port>; an empty list clears them. Public TCP addresses
+// only, at most 4. Peers learn the change within seconds, without a restart.
+func (api *NetApi) SetPublicAddrs(addrs []string) error {
+	public, ok := api.ipfsProxy.(ipfs.PublicAddrs)
+	if !ok {
+		return errors.New("public addresses are not supported by this node")
+	}
+	return public.SetPublicAddrs(addrs)
+}
+
+// PublicAddrs is the addresses set by SetPublicAddrs or at start (net_publicAddrs).
+func (api *NetApi) PublicAddrs() []string {
+	public, ok := api.ipfsProxy.(ipfs.PublicAddrs)
+	if !ok {
+		return []string{}
+	}
+	return public.PublicAddrs()
 }

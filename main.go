@@ -55,6 +55,7 @@ func main() {
 		config.IpfsHighWaterFlag,
 		config.ProfileFlag,
 		config.IpfsPortStaticFlag,
+		config.IpfsPublicAddrFlag,
 		config.ApiKeyFlag,
 		config.LogFileSizeFlag,
 		config.LogColoring,
