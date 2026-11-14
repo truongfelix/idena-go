@@ -4,6 +4,7 @@ package ipfs
 
 import (
 	"context"
+	"net"
 	"slices"
 	"testing"
 	"time"
@@ -37,6 +38,7 @@ func TestParsePublicAddrs(t *testing.T) {
 		"carrier-grade NAT":     {"/ip4/100.64.1.2/tcp/50506"},
 		"udp":                   {"/ip4/1.2.3.4/udp/50506"},
 		"no port":               {"/ip4/1.2.3.4"},
+		"port 0":                {"/ip4/1.2.3.4/tcp/0"},
 		"peer id after port":    {"/ip4/1.2.3.4/tcp/50506/p2p/QmYQEa2YYEcFRAnxuaVS5jBYKPQQFricdTHjtDMr3Ma2M3"},
 		"dns":                   {"/dns4/example.com/tcp/50506"},
 		"one bad refuses all":   {"/ip4/1.2.3.4/tcp/1", "/ip4/10.0.0.1/tcp/2"},
@@ -119,7 +121,12 @@ func TestPublicAddrsAnnouncedToPeersAtRuntime(t *testing.T) {
 // does not stop the node and announces nothing.
 func TestNodeAnnouncesPublicAddrsFromConfig(t *testing.T) {
 	const routerAddr = "/ip4/82.123.115.203/tcp/4013"
-	newNode := func(port int, addrs []string) (*publicAddrs, host.Host) {
+	// Free ports from the system: the shared test node moves to 4013, 4014... after 2 minutes without peers.
+	newNode := func(addrs []string) (*publicAddrs, host.Host) {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		port := ln.Addr().(*net.TCPAddr).Port
+		require.NoError(t, ln.Close())
 		cfg := &config.IpfsConfig{
 			SwarmKey:    "9ad6f96bb2b02a7308ad87938d6139a974b550cc029ce416641a60c46db2f530",
 			BootNodes:   []string{},
@@ -135,12 +142,12 @@ func TestNodeAnnouncesPublicAddrsFromConfig(t *testing.T) {
 		return public, node.PeerHost
 	}
 
-	public, h := newNode(4013, []string{routerAddr})
+	public, h := newNode([]string{routerAddr})
 	require.Equal(t, []string{routerAddr}, public.get())
 	require.Eventually(t, func() bool { return hasAddr(h.Addrs(), routerAddr) }, 15*time.Second,
 		100*time.Millisecond, "announced from the start: %v", h.Addrs())
 
-	bad, h2 := newNode(4014, []string{"/ip4/192.168.1.102/tcp/4014"})
+	bad, h2 := newNode([]string{"/ip4/192.168.1.102/tcp/4014"})
 	require.Empty(t, bad.get())
 	require.NoError(t, bad.set([]string{"/ip4/82.123.115.203/tcp/4014"}))
 	require.Eventually(t, func() bool { return hasAddr(h2.Addrs(), "/ip4/82.123.115.203/tcp/4014") },
@@ -157,4 +164,27 @@ func TestIpfsProxyPublicAddrs(t *testing.T) {
 	require.Equal(t, []string{"/ip4/82.123.115.203/tcp/4012"}, public.PublicAddrs())
 	require.Eventually(t, func() bool { return hasAddr(proxy.Host().Addrs(), "/ip4/82.123.115.203/tcp/4012") },
 		15*time.Second, 100*time.Millisecond, "the shared test node announces it")
+}
+
+func TestPublicAddrsAnnouncedOnce(t *testing.T) {
+	p := &publicAddrs{}
+	require.NoError(t, p.set([]string{"/ip4/1.2.3.4/tcp/1", "/ip4/1.2.3.4/tcp/1", "/ip4/5.6.7.8/tcp/2"}))
+	got := p.appendTo([]ma.Multiaddr{ma.StringCast("/ip4/5.6.7.8/tcp/2")})
+	require.Equal(t, []string{"/ip4/5.6.7.8/tcp/2", "/ip4/1.2.3.4/tcp/1"}, func() (out []string) {
+		for _, a := range got {
+			out = append(out, a.String())
+		}
+		return
+	}())
+}
+
+func TestPublicAddrsWithoutHolder(t *testing.T) {
+	var p *publicAddrs
+	require.Error(t, p.set([]string{"/ip4/1.2.3.4/tcp/1"}))
+	require.Empty(t, p.get())
+	require.Len(t, p.appendTo([]ma.Multiaddr{ma.StringCast("/ip4/1.2.3.4/tcp/1")}), 1)
+	require.NotNil(t, p.hostOption())
+	proxy := &ipfsProxy{}
+	require.Error(t, proxy.SetPublicAddrs(nil))
+	require.Empty(t, proxy.PublicAddrs())
 }

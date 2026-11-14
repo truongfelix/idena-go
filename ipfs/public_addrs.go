@@ -61,6 +61,9 @@ func parsePublicAddrs(addrs []string) ([]ma.Multiaddr, error) {
 			parts[1].Protocols()[0].Code != ma.P_TCP {
 			return nil, fmt.Errorf("public address %q: expected /ip4/<address>/tcp/<port> or /ip6/<address>/tcp/<port>", s)
 		}
+		if port, err := a.ValueForProtocol(ma.P_TCP); err != nil || port == "0" {
+			return nil, fmt.Errorf("public address %q: no port to dial", s)
+		}
 		parsed = append(parsed, a)
 	}
 	return parsed, nil
@@ -79,6 +82,9 @@ func publicAddrsFromConfig(cfg *config.IpfsConfig, logger log.Logger) *publicAdd
 }
 
 func (p *publicAddrs) set(addrs []string) error {
+	if p == nil {
+		return fmt.Errorf("public addresses are not supported by this node")
+	}
 	parsed, err := parsePublicAddrs(addrs)
 	if err != nil {
 		return err
@@ -90,6 +96,9 @@ func (p *publicAddrs) set(addrs []string) error {
 }
 
 func (p *publicAddrs) get() []string {
+	if p == nil {
+		return []string{}
+	}
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	out := make([]string, len(p.addrs))
@@ -99,8 +108,11 @@ func (p *publicAddrs) get() []string {
 	return out
 }
 
-// appendTo returns addrs with the announced addresses that addrs does not already hold.
+// appendTo returns addrs with the announced addresses it does not already hold, each once.
 func (p *publicAddrs) appendTo(addrs []ma.Multiaddr) []ma.Multiaddr {
+	if p == nil {
+		return addrs
+	}
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	if len(p.addrs) == 0 {
@@ -110,7 +122,7 @@ func (p *publicAddrs) appendTo(addrs []ma.Multiaddr) []ma.Multiaddr {
 	out = append(out, addrs...)
 	for _, a := range p.addrs {
 		known := false
-		for _, b := range addrs {
+		for _, b := range out {
 			if a.Equal(b) {
 				known = true
 				break
@@ -128,7 +140,11 @@ func (p *publicAddrs) appendTo(addrs []ma.Multiaddr) []ma.Multiaddr {
 // libp2p accepts one address factory only, hence the wrap after the options are applied rather than another option.
 // libp2p hides public addresses while it takes the node as unreachable, before the factory runs: the factory's
 // addresses are announced in any case.
+// It mirrors Kubo v0.42.0 (constructPeerHost) and go-libp2p v0.48.0 (New): compare both on the next upgrade.
 func (p *publicAddrs) hostOption() kubolibp2p.HostOption {
+	if p == nil {
+		return kubolibp2p.DefaultHostOption
+	}
 	return func(id peer.ID, ps peerstore.Peerstore, options ...libp2p.Option) (host.Host, error) {
 		pkey := ps.PrivKey(id)
 		if pkey == nil {

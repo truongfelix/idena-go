@@ -119,7 +119,11 @@ func (p *ipfsProxy) SetPublicAddrs(addrs []string) error {
 	if err := p.public.set(addrs); err != nil {
 		return err
 	}
-	p.log.Info("Public IPFS addresses announced", "addrs", strings.Join(addrs, ","))
+	if len(addrs) == 0 {
+		p.log.Info("Public IPFS addresses cleared")
+	} else {
+		p.log.Info("Public IPFS addresses announced", "addrs", strings.Join(addrs, ","))
+	}
 	return nil
 }
 
@@ -259,6 +263,12 @@ func (p *ipfsProxy) changePort() {
 	case <-c.Done():
 		p.log.Error("timeout while stopping IPFS")
 	case <-p.nodeCtx.Done():
+	}
+
+	// The announced addresses lead to the old port: the app sets them again for the new one.
+	if len(p.public.get()) > 0 {
+		_ = p.public.set(nil)
+		p.log.Warn("Public IPFS addresses cleared: the IPFS port changes")
 	}
 
 	for {
