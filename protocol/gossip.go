@@ -159,12 +159,7 @@ func (h *IdenaGossipHandler) Start() {
 		newFlipEvent := e.(*events.NewFlipEvent)
 		h.sendFlip(newFlipEvent.Flip)
 	})
-	h.bus.Subscribe(events.IpfsPortChangedEventId, func(e eventbus.Event) {
-		portChangedEvent := e.(*events.IpfsPortChangedEvent)
-		h.host = portChangedEvent.Host
-		h.pubsub = portChangedEvent.PubSub
-		setHandler()
-	})
+	h.subscribeIpfsPortChanged(setHandler)
 
 	h.bus.Subscribe(events.AddBlockEventID, func(e eventbus.Event) {
 		shardId := h.OwnPeeringShardId()
