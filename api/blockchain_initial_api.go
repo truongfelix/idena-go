@@ -13,8 +13,10 @@ func NewBlockchainInitialApi(nodeState *state.NodeState) *BlockchainInitialApi {
 }
 
 func (api *BlockchainInitialApi) Syncing() Syncing {
+	message, compacting := api.nodeState.Starting()
 	return Syncing{
-		Syncing: true,
-		Message: api.nodeState.Info(),
+		Syncing:    true,
+		Message:    message,
+		Compacting: compacting,
 	}
 }

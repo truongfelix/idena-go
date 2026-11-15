@@ -19,6 +19,7 @@ const (
 	BlockchainResetEventID       = eventbus.EventID("chain-reset")
 	DatabaseInitEventId          = eventbus.EventID("db-init")
 	DatabaseInitCompletedEventId = eventbus.EventID("db-init-completed")
+	DatabaseCompactionEventId    = eventbus.EventID("db-compaction")
 	IpfsGcEventId                = eventbus.EventID("ipfc-gc")
 )
 
@@ -106,6 +107,16 @@ type DatabaseInitCompletedEvent struct {
 
 func (e *DatabaseInitCompletedEvent) EventID() eventbus.EventID {
 	return DatabaseInitCompletedEventId
+}
+
+// DatabaseCompactionEvent marks the start (Completed false) and the end (Completed true) of the chain database's
+// full compaction at start-up.
+type DatabaseCompactionEvent struct {
+	Completed bool
+}
+
+func (e *DatabaseCompactionEvent) EventID() eventbus.EventID {
+	return DatabaseCompactionEventId
 }
 
 type IpfsGcEvent struct {
