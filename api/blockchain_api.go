@@ -423,6 +423,9 @@ type Syncing struct {
 	WrongTime    bool   `json:"wrongTime"`
 	GenesisBlock uint64 `json:"genesisBlock"`
 	Message      string `json:"message"`
+	// Compacting is set while the node compacts its chain database at start-up (bcn_syncing is then the only
+	// namespace served).
+	Compacting bool `json:"compacting,omitempty"`
 }
 
 func (api *BlockchainApi) Syncing() Syncing {

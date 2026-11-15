@@ -569,6 +569,7 @@ func (h *IdenaGossipHandler) runPeer(stream network.Stream, inbound bool) (*prot
 	}()
 
 	peer := newPeer(stream, h.cfg.MaxDelay, h.metrics)
+	peer.inbound = inbound
 
 	if err := peer.Handshake(h.bcn.Network(), h.bcn.Head.Height(), h.bcn.GenesisInfo(), h.appVersion, uint32(h.peers.Len()), h.OwnPeeringShardId()); err != nil {
 		if shouldLogHandshakeFailure(h.appVersion, peer.appVersion) {

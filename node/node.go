@@ -212,7 +212,9 @@ func NewNodeWithInjections(config *config.Config, bus eventbus.Bus, statsCollect
 	}
 
 	bus.Publish(&events.DatabaseInitEvent{})
-	db, err := openChainDatabase(config, true)
+	db, err := openChainDatabaseNotifying(config, true, func(completed bool) {
+		bus.Publish(&events.DatabaseCompactionEvent{Completed: completed})
+	})
 	bus.Publish(&events.DatabaseInitCompletedEvent{})
 
 	if err != nil {
@@ -514,7 +516,12 @@ func (node *Node) stopHTTP() {
 
 // openChainDatabase opens the chain database of cfg.DataDir as the node does.
 func openChainDatabase(cfg *config.Config, compact bool) (db.DB, error) {
-	return OpenDatabaseWithWriteBuffer(cfg.DataDir, "idenachain", 16, 16, cfg.DatabaseWriteBufferMiB(), compact)
+	return openChainDatabaseNotifying(cfg, compact, nil)
+}
+
+// openChainDatabaseNotifying is openChainDatabase that calls onCompaction around a full compaction (openDatabase).
+func openChainDatabaseNotifying(cfg *config.Config, compact bool, onCompaction func(completed bool)) (db.DB, error) {
+	return openDatabase(cfg.DataDir, "idenachain", 16, 16, cfg.DatabaseWriteBufferMiB(), compact, onCompaction)
 }
 
 // nextValidationTime reads the next validation time at the chain's head (zero when there is no chain yet).
@@ -542,6 +549,12 @@ func OpenDatabase(datadir string, name string, cache int, handles int, compact b
 // buffer is not stored in the database: each open may use another size (the journal left by a stop without a
 // clean close is replayed into level-0 tables of the new size).
 func OpenDatabaseWithWriteBuffer(datadir string, name string, cache int, handles int, writeBufferMiB int, compact bool) (db.DB, error) {
+	return openDatabase(datadir, name, cache, handles, writeBufferMiB, compact, nil)
+}
+
+// openDatabase is OpenDatabaseWithWriteBuffer that calls onCompaction (when set) with false before a full
+// compaction and with true after it.
+func openDatabase(datadir string, name string, cache int, handles int, writeBufferMiB int, compact bool, onCompaction func(completed bool)) (db.DB, error) {
 	writeBuffer := cache / 4 * opt.MiB
 	if writeBufferMiB > 0 {
 		writeBuffer = writeBufferMiB * opt.MiB
@@ -556,7 +569,14 @@ func OpenDatabaseWithWriteBuffer(datadir string, name string, cache int, handles
 		return nil, err
 	}
 	if compact && needsFullCompaction(res.DB()) {
-		if err := compactDb(res); err != nil {
+		if onCompaction != nil {
+			onCompaction(false)
+		}
+		err := compactDb(res)
+		if onCompaction != nil {
+			onCompaction(true)
+		}
+		if err != nil {
 			res.Close()
 			return nil, err
 		}

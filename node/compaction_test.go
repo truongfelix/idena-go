@@ -61,8 +61,14 @@ func TestOpenDatabaseCompactsOnlyWithEnoughDataAboveDeepestLevel(t *testing.T) {
 	d, share := open(false)
 	require.Greater(t, share, minShareAboveDeepestLevel)
 	require.NoError(t, d.Close())
-	d, share = open(true)
-	require.Zero(t, share)
+	var calls []bool
+	notified := func(completed bool) { calls = append(calls, completed) }
+	d, err := openDatabase(dir, "test", 16, 16, 0, true, notified)
+	require.NoError(t, err)
+	require.Equal(t, []bool{false, true}, calls, "the compaction is announced before and after")
+	var stats leveldb.DBStats
+	require.NoError(t, d.(*db.GoLevelDB).DB().Stats(&stats))
+	require.Zero(t, shareAboveDeepestLevel(stats.LevelSizes))
 	write(d, keys/100)
 	require.NoError(t, d.Close())
 
@@ -70,6 +76,11 @@ func TestOpenDatabaseCompactsOnlyWithEnoughDataAboveDeepestLevel(t *testing.T) {
 	d, share = open(false)
 	require.Greater(t, share, 0.0)
 	require.Less(t, share, minShareAboveDeepestLevel)
+	require.NoError(t, d.Close())
+	calls = nil
+	d, err = openDatabase(dir, "test", 16, 16, 0, true, notified)
+	require.NoError(t, err)
+	require.Empty(t, calls, "a skipped compaction announces nothing")
 	require.NoError(t, d.Close())
 	d, shareAfterOpen := open(true)
 	require.Equal(t, share, shareAfterOpen)

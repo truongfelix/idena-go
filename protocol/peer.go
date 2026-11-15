@@ -124,6 +124,8 @@ type protoPeer struct {
 	closed               bool
 	supportedFeatures    map[PeerFeature]struct{}
 	disconnectReason     string
+	// inbound is set for a peer that opened the connection to this node.
+	inbound bool
 }
 
 func newPeer(stream network.Stream, maxDelayMs int, metrics *metricCollector) *protoPeer {
@@ -674,6 +676,11 @@ func (p *protoPeer) disconnect(reason string) {
 
 func (p *protoPeer) ID() string {
 	return p.id.String()
+}
+
+// Inbound reports whether the peer opened the connection to this node.
+func (p *protoPeer) Inbound() bool {
+	return p.inbound
 }
 
 func (p *protoPeer) RemoteAddr() string {

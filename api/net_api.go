@@ -27,6 +27,9 @@ type Peer struct {
 	RemoteAddr string `json:"addr"`
 	// Direct is set for a node named in P2P.DirectPeers.
 	Direct bool `json:"direct,omitempty"`
+	// Inbound is set for a peer that opened the connection to this node, false for one this node dialed: always
+	// present, so a client tells a node that reports it from an older one.
+	Inbound bool `json:"inbound"`
 }
 
 func (api *NetApi) Peers() []Peer {
@@ -36,6 +39,7 @@ func (api *NetApi) Peers() []Peer {
 			ID:         p.ID(),
 			RemoteAddr: p.RemoteAddr(),
 			Direct:     api.pm.IsDirectPeer(p),
+			Inbound:    p.Inbound(),
 		})
 	}
 	return peers
