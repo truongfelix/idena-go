@@ -44,6 +44,11 @@ func Test_needsOnlineStatusTx(t *testing.T) {
 	require.False(t, needsOnlineStatusTx(appState, online))
 	require.False(t, needsOnlineStatusTx(appState, candidate))
 
+	appState.State.ToggleStatusSwitchAddress(validated)
+	require.False(t, needsOnlineStatusTx(appState, validated), "a status switch is pending")
+	appState.State.ToggleStatusSwitchAddress(validated)
+	require.True(t, needsOnlineStatusTx(appState, validated))
+
 	appState.State.SetValidationPeriod(state.FlipLotteryPeriod)
 	require.False(t, needsOnlineStatusTx(appState, validated))
 }
