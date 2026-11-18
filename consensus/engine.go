@@ -596,6 +596,29 @@ func (engine *Engine) Synced() bool {
 	return engine.synced
 }
 
+// needsOnlineStatusTx tells whether the coinbase should send a tx that turns it online: it is validated or a pool,
+// not online yet, no switch is pending, and the validation period still accepts the tx. An identity that delegated
+// to a pool is left out: validateOnlineStatusTx refuses any identity with a delegatee, and its pool mines for it.
+func needsOnlineStatusTx(appState *appstate.AppState, coinbase common.Address) bool {
+	if appState.State.ValidationPeriod() >= state.FlipLotteryPeriod {
+		return false
+	}
+	if appState.ValidatorsCache.IsOnlineIdentity(coinbase) {
+		return false
+	}
+	if !appState.ValidatorsCache.IsValidated(coinbase) && !appState.ValidatorsCache.IsPool(coinbase) {
+		return false
+	}
+	if appState.State.HasStatusSwitchAddresses(coinbase) {
+		return false
+	}
+	identity := appState.State.GetIdentity(coinbase)
+	if identity.Delegatee() != nil {
+		return false
+	}
+	return true
+}
+
 func (engine *Engine) checkOnlineStatus() error {
 
 	if !engine.cfg.AutoOnline {
@@ -606,18 +629,9 @@ func (engine *Engine) checkOnlineStatus() error {
 	if err != nil {
 		return err
 	}
-	if appState.State.ValidationPeriod() >= state.FlipLotteryPeriod {
-		return nil
-	}
 
 	coinbase := engine.secStore.GetAddress()
-	if appState.ValidatorsCache.IsOnlineIdentity(coinbase) {
-		return nil
-	}
-	if !appState.ValidatorsCache.IsValidated(coinbase) && !appState.ValidatorsCache.IsPool(coinbase) {
-		return nil
-	}
-	if appState.State.HasStatusSwitchAddresses(coinbase) {
+	if !needsOnlineStatusTx(appState, coinbase) {
 		return nil
 	}
 
