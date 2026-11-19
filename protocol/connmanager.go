@@ -92,13 +92,7 @@ func (m *ConnManager) CanConnect(id peer.ID) bool {
 	if m.bannedPeers.Contains(id) {
 		return false
 	}
-	m.peerMutex.RLock()
-	defer m.peerMutex.RUnlock()
-	if discTime, ok := m.discTimes[id]; ok && time.Now().UTC().Sub(discTime) < ReconnectAfterDiscTimeout {
-		return false
-	}
-
-	if resetTime, ok := m.resetTimes[id]; ok && time.Now().UTC().Sub(resetTime) < ReconnectAfterResetTimeout {
+	if m.waitsAfterDisconnect(id) {
 		return false
 	}
 	if m.host.Network().Connectedness(id) != network.Connected {
@@ -112,6 +106,19 @@ func (m *ConnManager) CanConnect(id peer.ID) bool {
 		if strings.Contains(string(p), IdenaProtocolPath) {
 			return true
 		}
+	}
+	return false
+}
+
+// waitsAfterDisconnect tells whether id left or reset its stream too recently to be connected again.
+func (m *ConnManager) waitsAfterDisconnect(id peer.ID) bool {
+	m.peerMutex.RLock()
+	defer m.peerMutex.RUnlock()
+	if discTime, ok := m.discTimes[id]; ok && time.Now().UTC().Sub(discTime) < ReconnectAfterDiscTimeout {
+		return true
+	}
+	if resetTime, ok := m.resetTimes[id]; ok && time.Now().UTC().Sub(resetTime) < ReconnectAfterResetTimeout {
+		return true
 	}
 	return false
 }
@@ -247,23 +254,42 @@ func (m *ConnManager) DialRandomPeer() (network.Stream, error) {
 		return nil, NoPeersToDial
 	}
 
-	// The nodes peer exchange shared go first: they have free incoming slots that no other pick fills.
-	var preferred []network.Conn
-	for _, c := range filteredConns {
-		if m.preferCandidate(c.RemotePeer()) {
-			preferred = append(preferred, c)
+	// The nodes peer exchange shared go first: they have free incoming slots that no other pick fills. Only without
+	// shards, where any peer fills the slot: a shard need takes the usual pick. Both share the attempts.
+	attempt := 0
+	if m.ownShardId == common.MultiShard {
+		var preferred []network.Conn
+		for _, c := range filteredConns {
+			if m.preferCandidate(c.RemotePeer()) {
+				preferred = append(preferred, c)
+			}
 		}
-	}
-	for len(preferred) > 0 {
-		idx := secureIntn(len(preferred))
-		if stream, err := m.findOrOpenStream(preferred[idx]); err == nil {
-			return stream, nil
+		failed := make(map[peer.ID]struct{})
+		for len(preferred) > 0 && attempt < dialPeerAttempts {
+			attempt++
+			idx := secureIntn(len(preferred))
+			if stream, err := m.findOrOpenStream(preferred[idx]); err == nil {
+				return stream, nil
+			}
+			failed[preferred[idx].RemotePeer()] = struct{}{}
+			preferred[idx] = preferred[len(preferred)-1]
+			preferred = preferred[:len(preferred)-1]
 		}
-		preferred[idx] = preferred[len(preferred)-1]
-		preferred = preferred[:len(preferred)-1]
+		if len(failed) > 0 {
+			left := filteredConns[:0]
+			for _, c := range filteredConns {
+				if _, ok := failed[c.RemotePeer()]; !ok {
+					left = append(left, c)
+				}
+			}
+			filteredConns = left
+			if len(filteredConns) == 0 {
+				return nil, FailedToDialPeer
+			}
+		}
 	}
 
-	for attempt := 0; attempt < dialPeerAttempts; attempt++ {
+	for ; attempt < dialPeerAttempts; attempt++ {
 		idx := secureIntn(len(filteredConns))
 		conn := filteredConns[idx]
 

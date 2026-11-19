@@ -13,6 +13,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/peerstore"
 	"github.com/multiformats/go-multiaddr"
+	manet "github.com/multiformats/go-multiaddr/net"
 )
 
 // Peer exchange: a node tells its incoming Idena peers and its direct peers which of its other incoming peers can be
@@ -101,8 +102,14 @@ func (e *peerExchange) register(host core.Host) {
 		for ev := range sub.Out() {
 			r := ev.(event.EvtLocalReachabilityChanged).Reachability
 			e.reachability.Lock()
-			e.private = r == network.ReachabilityPrivate
+			current := e.sub == sub
+			if current {
+				e.private = r == network.ReachabilityPrivate
+			}
 			e.reachability.Unlock()
+			if !current {
+				return
+			}
 			e.handler.log.Info("Reachability changed", "reachability", r.String())
 		}
 	}()
@@ -149,6 +156,12 @@ func (e *peerExchange) serve(stream network.Stream) {
 	now := time.Now()
 	e.mutex.Lock()
 	if last, ok := e.lastRequests[from]; ok && now.Sub(last) < peerExchangeMinInterval {
+		e.mutex.Unlock()
+		_ = stream.Reset()
+		return
+	}
+	if e.handler.peers.Peer(from) == nil {
+		// It left while the request was read: forget ran already.
 		e.mutex.Unlock()
 		_ = stream.Reset()
 		return
@@ -213,9 +226,20 @@ func relayAddrs(addrs []multiaddr.Multiaddr) []string {
 	return res
 }
 
+// isRelayAddr accepts <public address>/p2p/<relay>/p2p-circuit only: one circuit, at the end, through a relay at a
+// public address, so an answer cannot have this node dial its own network.
 func isRelayAddr(a multiaddr.Multiaddr) bool {
-	_, err := a.ValueForProtocol(multiaddr.P_CIRCUIT)
-	return err == nil
+	circuits, at := 0, -1
+	for i, c := range a {
+		if c.Code() == multiaddr.P_CIRCUIT {
+			circuits++
+			at = i
+		}
+	}
+	if circuits != 1 || at < 2 || at != len(a)-1 || a[at-1].Code() != multiaddr.P_P2P {
+		return false
+	}
+	return manet.IsPublicAddr(a[:at])
 }
 
 // wantsListing tells whether this node asks to be shared: it has no open port and free incoming slots.
@@ -223,11 +247,13 @@ func (e *peerExchange) wantsListing() bool {
 	return e.isPrivate() && e.handler.connManager.CanAcceptStream()
 }
 
-// askTargets picks the peers to ask this round: the peers this node connected out to and its direct peers.
+// askTargets picks the peers to ask this round among the peers this node connected out to: it is an incoming peer
+// there. A direct peer that connected in asks this node instead (it is answered as a direct peer only where it is
+// named).
 func (e *peerExchange) askTargets() []peer.ID {
 	var all []peer.ID
 	for _, p := range e.handler.peers.Peers() {
-		if !p.Inbound() || e.handler.connManager.IsDirectPeer(p.id) {
+		if !p.Inbound() {
 			all = append(all, p.id)
 		}
 	}
@@ -244,6 +270,8 @@ func (e *peerExchange) askTargets() []peer.ID {
 // round asks a few peers for their listed peers and dials the new ones through their relays.
 func (e *peerExchange) round() {
 	listMe := e.wantsListing()
+	// A shared node is dialed only when an outgoing slot can take it.
+	canDial := e.handler.connManager.CanDial() || e.handler.connManager.NeedOutboundOwnShardPeers()
 	dials, answers, shared := 0, 0, 0
 	targets := e.askTargets()
 	for _, target := range targets {
@@ -254,8 +282,9 @@ func (e *peerExchange) round() {
 		}
 		answers++
 		shared += len(infos)
+		// At most one node per answering peer: no single peer chooses several of this node's outgoing peers.
 		for _, info := range infos {
-			if dials >= peerExchangeMaxDials {
+			if !canDial || dials >= peerExchangeMaxDials {
 				break
 			}
 			if !e.worthDialing(info.ID) {
@@ -264,6 +293,7 @@ func (e *peerExchange) round() {
 			dials++
 			e.handler.connManager.AddCandidate(info.ID, time.Now().Add(peerExchangeCandidateTTL))
 			go e.dial(info)
+			break
 		}
 	}
 	e.handler.connManager.PruneCandidates(time.Now(), func(id peer.ID) {
@@ -275,7 +305,8 @@ func (e *peerExchange) round() {
 
 func (e *peerExchange) worthDialing(id peer.ID) bool {
 	h := e.handler
-	if id == h.host.ID() || h.peers.Peer(id) != nil || h.connManager.IsCandidate(id) || h.connManager.IsBanned(id) {
+	if id == h.host.ID() || h.peers.Peer(id) != nil || h.connManager.IsCandidate(id) || h.connManager.IsBanned(id) ||
+		h.connManager.waitsAfterDisconnect(id) {
 		return false
 	}
 	return h.host.Network().Connectedness(id) != network.Connected
@@ -338,12 +369,12 @@ func parsePeerExchangeEntries(entries []peerExchangeEntry) []peer.AddrInfo {
 				break
 			}
 			a, err := multiaddr.NewMultiaddr(s)
-			if err != nil || !isRelayAddr(a) {
+			if err != nil {
 				continue
 			}
 			// A relay address may end with the peer's own id; any other id there names another peer.
 			transport, last := peer.SplitAddr(a)
-			if last != "" && last != id || transport == nil {
+			if last != "" && last != id || transport == nil || !isRelayAddr(transport) {
 				continue
 			}
 			info.Addrs = append(info.Addrs, transport)

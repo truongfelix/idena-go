@@ -665,6 +665,7 @@ func (h *IdenaGossipHandler) unregisterPeer(peerId peer.ID) {
 	h.connManager.Disconnected(peerId, err)
 	h.exchange.forget(peerId)
 	h.host.ConnManager().UntagPeer(peerId, "idena")
+	h.host.ConnManager().UntagPeer(peerId, peerExchangeTag)
 	if peer.disconnectReason == "" {
 		h.log.Info("Peer disconnected", "id", peerId.String(), "shardId", peer.shardId)
 	} else {

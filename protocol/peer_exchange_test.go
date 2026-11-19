@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/idena-network/idena-go/common"
 	"github.com/idena-network/idena-go/config"
 	"github.com/idena-network/idena-go/log"
 	"github.com/libp2p/go-libp2p"
@@ -65,7 +66,7 @@ func TestPeerExchangeSharesListedIncomingPeersByRelayOnly(t *testing.T) {
 	addIdenaPeer(t, asker, sharerHost.ID(), false)
 	addIdenaPeer(t, listed, sharerHost.ID(), false)
 
-	relayAddr := "/ip4/127.0.0.1/tcp/4001/p2p/" + relayPeerId + "/p2p-circuit"
+	relayAddr := "/ip4/1.2.3.4/tcp/4001/p2p/" + relayPeerId + "/p2p-circuit"
 	// The sharer knows the node's own address too, as identify gives it: it must stay out of the answer.
 	sharerHost.Peerstore().AddAddrs(listedHost.ID(), []multiaddr.Multiaddr{mustAddr(t, "/ip4/5.6.7.8/tcp/40405"), mustAddr(t, relayAddr)}, peerstore.PermanentAddrTTL)
 
@@ -90,7 +91,7 @@ func TestPeerExchangeListsOnlyThePeersThatAsked(t *testing.T) {
 	connectHosts(t, otherHost, sharerHost)
 	addIdenaPeer(t, sharer, askerHost.ID(), true)
 	addIdenaPeer(t, sharer, otherHost.ID(), true)
-	sharerHost.Peerstore().AddAddrs(otherHost.ID(), []multiaddr.Multiaddr{mustAddr(t, "/ip4/127.0.0.1/tcp/4001/p2p/"+relayPeerId+"/p2p-circuit")}, peerstore.PermanentAddrTTL)
+	sharerHost.Peerstore().AddAddrs(otherHost.ID(), []multiaddr.Multiaddr{mustAddr(t, "/ip4/1.2.3.4/tcp/4001/p2p/"+relayPeerId+"/p2p-circuit")}, peerstore.PermanentAddrTTL)
 
 	// The other node asks without listMe: it stays out of the answers.
 	_, err := other.exchange.ask(sharerHost.ID(), false)
@@ -161,7 +162,7 @@ func TestPeerExchangeForgetsAPeerThatLeft(t *testing.T) {
 	connectHosts(t, listedHost, sharerHost)
 	addIdenaPeer(t, sharer, askerHost.ID(), true)
 	addIdenaPeer(t, sharer, listedHost.ID(), true)
-	sharerHost.Peerstore().AddAddrs(listedHost.ID(), []multiaddr.Multiaddr{mustAddr(t, "/ip4/127.0.0.1/tcp/4001/p2p/"+relayPeerId+"/p2p-circuit")}, peerstore.PermanentAddrTTL)
+	sharerHost.Peerstore().AddAddrs(listedHost.ID(), []multiaddr.Multiaddr{mustAddr(t, "/ip4/1.2.3.4/tcp/4001/p2p/"+relayPeerId+"/p2p-circuit")}, peerstore.PermanentAddrTTL)
 	_, err := listed.exchange.ask(sharerHost.ID(), true)
 	require.NoError(t, err)
 
@@ -214,28 +215,28 @@ func TestSharedPeersGoFirstForHalfTheOutgoingSlots(t *testing.T) {
 	require.Equal(t, 3, m.exchangeOutCap())
 
 	until := time.Now().Add(time.Minute)
-	shared := []peer.ID{"s1", "s2", "s3", "s4"}
+	shared := []peer.ID{"a1", "a2", "a3", "a4"}
 	for _, id := range shared {
 		m.AddCandidate(id, until)
 	}
-	require.True(t, m.preferCandidate("s1"))
+	require.True(t, m.preferCandidate("a1"))
 	require.False(t, m.preferCandidate("usual"), "a node nobody shared went first")
 
 	for _, id := range shared[:3] {
 		m.Connected(id, false, 0)
 	}
-	require.False(t, m.IsCandidate("s1"), "a candidate stays one once connected")
-	require.False(t, m.preferCandidate("s4"), "shared peers took more than half of the outgoing slots")
+	require.False(t, m.IsCandidate("a1"), "a candidate stays one once connected")
+	require.False(t, m.preferCandidate("a4"), "shared peers took more than half of the outgoing slots")
 
 	// One of them leaves: the next shared node goes first again.
-	m.Disconnected("s2", nil)
-	require.True(t, m.preferCandidate("s4"))
+	m.Disconnected("a2", nil)
+	require.True(t, m.preferCandidate("a4"))
 }
 
 func TestSharedPeerConnectingInDoesNotCount(t *testing.T) {
 	m := NewConnManager(nil, config.P2P{MaxOutboundOwnShardPeers: 4, MaxOutboundPeers: 2})
-	m.AddCandidate("s1", time.Now().Add(time.Minute))
-	m.Connected("s1", true, 0)
+	m.AddCandidate("a1", time.Now().Add(time.Minute))
+	m.Connected("a1", true, 0)
 	m.peerMutex.RLock()
 	defer m.peerMutex.RUnlock()
 	require.Empty(t, m.exchangeOut)
@@ -262,4 +263,66 @@ func TestRelayAddrsNeverShareTheNodesOwnAddress(t *testing.T) {
 		mustAddr(t, "/ip6/2a01::1/tcp/40405"),
 	})
 	require.Equal(t, []string{relay}, got)
+}
+
+func TestIsRelayAddrAcceptsOnlyACircuitThroughAPublicRelay(t *testing.T) {
+	relay := "/p2p/" + relayPeerId + "/p2p-circuit"
+	for addr, want := range map[string]bool{
+		"/ip4/1.2.3.4/tcp/4001" + relay:              true,
+		"/ip6/2a01:4f9:c015:ebc::1/tcp/4001" + relay: true,
+		"/ip4/192.168.1.1/tcp/80" + relay:            false, // the asking node's own network
+		"/ip4/127.0.0.1/tcp/4001" + relay:            false,
+		"/ip4/1.2.3.4/tcp/4001/p2p-circuit":          false, // no relay id
+		"/p2p-circuit":                               false,
+		"/ip4/1.2.3.4/tcp/4001" + relay + relay:      false, // nested circuit
+		"/ip4/1.2.3.4/tcp/4001":                      false,
+	} {
+		require.Equal(t, want, isRelayAddr(mustAddr(t, addr)), addr)
+	}
+}
+
+// newRoundNode is an exchange node that connected out to sharer, with outgoing slots as given.
+func newRoundNode(t *testing.T, sharer *IdenaGossipHandler, maxOut int) *IdenaGossipHandler {
+	t.Helper()
+	h := newExchangeNode(t, newExchangeHost(t), config.P2P{MaxOutboundOwnShardPeers: maxOut})
+	h.connManager.SetShardId(common.MultiShard)
+	connectHosts(t, h.host, sharer.host)
+	addIdenaPeer(t, sharer, h.host.ID(), true)
+	addIdenaPeer(t, h, sharer.host.ID(), false)
+	return h
+}
+
+func listTwoPeers(t *testing.T, sharer *IdenaGossipHandler) {
+	t.Helper()
+	for i := 0; i < 2; i++ {
+		listed := newRoundNode(t, sharer, 4)
+		sharer.host.Peerstore().AddAddrs(listed.host.ID(), []multiaddr.Multiaddr{mustAddr(t, "/ip4/1.2.3.4/tcp/4001/p2p/"+relayPeerId+"/p2p-circuit")}, peerstore.PermanentAddrTTL)
+		_, err := listed.exchange.ask(sharer.host.ID(), true)
+		require.NoError(t, err)
+	}
+}
+
+func candidateCount(h *IdenaGossipHandler) int {
+	h.connManager.peerMutex.RLock()
+	defer h.connManager.peerMutex.RUnlock()
+	return len(h.connManager.candidates)
+}
+
+func TestPeerExchangeRoundTakesOneNodePerAnsweringPeer(t *testing.T) {
+	sharer := newExchangeNode(t, newExchangeHost(t), config.P2P{})
+	listTwoPeers(t, sharer)
+	asker := newRoundNode(t, sharer, 4)
+
+	asker.exchange.round()
+	require.Equal(t, 1, candidateCount(asker), "one answering peer chose more than one outgoing peer")
+}
+
+func TestPeerExchangeRoundDialsNothingWithoutAFreeOutgoingSlot(t *testing.T) {
+	sharer := newExchangeNode(t, newExchangeHost(t), config.P2P{})
+	listTwoPeers(t, sharer)
+	// Its one outgoing slot holds the sharer.
+	asker := newRoundNode(t, sharer, 1)
+
+	asker.exchange.round()
+	require.Zero(t, candidateCount(asker))
 }
