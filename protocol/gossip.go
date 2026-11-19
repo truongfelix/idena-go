@@ -127,12 +127,14 @@ func (h *IdenaGossipHandler) Start() {
 
 	setHandler := func() {
 		host := h.host
+		// The manager first: with the protocol advertised from the start, a stream can come as soon as the handler is
+		// set, and it must count on the manager that stays.
+		h.connManager = NewConnManager(host, h.cfg)
+		watchConnections(host, h.connManager)
 		reconnectTargets, closed, failed := registerIdenaStreamHandler(host, h.acceptStream)
 		if closed > 0 || failed > 0 {
 			h.log.Info("Refreshed Idena protocol advertisement", "closedPeers", closed, "failedPeers", failed)
 		}
-		h.connManager = NewConnManager(host, h.cfg)
-		watchConnections(host, h.connManager)
 		go func() {
 			connected, reconnectFailed := reconnectIdenaPeers(host, reconnectTargets)
 			if connected > 0 || reconnectFailed > 0 {
@@ -196,7 +198,9 @@ func init() {
 func watchConnections(host core.Host, cm *ConnManager) {
 	host.Network().Notify(&notifiee{connManager: cm})
 	for _, conn := range host.Network().Conns() {
-		cm.storeConnection(conn)
+		if !cm.bannedPeers.Contains(conn.RemotePeer()) {
+			cm.storeConnection(conn)
+		}
 	}
 }
 

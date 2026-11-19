@@ -42,6 +42,11 @@ func registerEarlyProtocols(h host.Host) {
 	for _, p := range protocols {
 		h.SetStreamHandlerMatch(p.id, p.match, resetStream)
 	}
+	// The host listens before it is returned: a peer that connected in that moment saw none of these protocols.
+	// Closing its connection has it connect again and see them.
+	for _, c := range h.Network().Conns() {
+		_ = c.Close()
+	}
 }
 
 // resetStream answers a stream that arrives before the protocol's handler is set, between the IPFS node's start and
