@@ -132,10 +132,7 @@ func (h *IdenaGossipHandler) Start() {
 			h.log.Info("Refreshed Idena protocol advertisement", "closedPeers", closed, "failedPeers", failed)
 		}
 		h.connManager = NewConnManager(host, h.cfg)
-		notifiee := &notifiee{
-			connManager: h.connManager,
-		}
-		host.Network().Notify(notifiee)
+		watchConnections(host, h.connManager)
 		go func() {
 			connected, reconnectFailed := reconnectIdenaPeers(host, reconnectTargets)
 			if connected > 0 || reconnectFailed > 0 {
@@ -181,9 +178,26 @@ func (h *IdenaGossipHandler) Start() {
 	go h.watchShardSubscription()
 }
 
+// idenaMatcher accepts the Idena protocol versions this node speaks.
+var idenaMatcher = func() func(core.ProtocolID) bool {
+	matcher, err := multistreamSemverMatcher(IdenaProtocol)
+	if err != nil {
+		panic(fmt.Sprintf("Idena protocol %s has no semver version: %v", IdenaProtocol, err))
+	}
+	return matcher
+}()
+
 func init() {
-	matcher, _ := multistreamSemverMatcher(IdenaProtocol)
-	ipfs.AdvertiseFromStart(IdenaProtocol, matcher)
+	ipfs.AdvertiseFromStart(IdenaProtocol, idenaMatcher)
+}
+
+// watchConnections makes cm follow the host's connections: the ones opened from now on, and the ones already open
+// (with the protocol advertised from the start, none is closed and opened again at registration).
+func watchConnections(host core.Host, cm *ConnManager) {
+	host.Network().Notify(&notifiee{connManager: cm})
+	for _, conn := range host.Network().Conns() {
+		cm.storeConnection(conn)
+	}
 }
 
 // registerIdenaStreamHandler sets the Idena stream handler. The IPFS node's host advertises the protocol from its
@@ -193,8 +207,7 @@ func init() {
 func registerIdenaStreamHandler(host core.Host, handler network.StreamHandler) (reconnectTargets []peer.AddrInfo, closed, failed int) {
 	advertised := slices.Contains(host.Mux().Protocols(), IdenaProtocol)
 	preexistingPeers := append([]peer.ID(nil), host.Network().Peers()...)
-	matcher, _ := multistreamSemverMatcher(IdenaProtocol)
-	host.SetStreamHandlerMatch(IdenaProtocol, matcher, handler)
+	host.SetStreamHandlerMatch(IdenaProtocol, idenaMatcher, handler)
 	if advertised {
 		return nil, 0, 0
 	}

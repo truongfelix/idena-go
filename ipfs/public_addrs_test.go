@@ -16,6 +16,7 @@ import (
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/libp2p/go-libp2p/p2p/host/peerstore/pstoremem"
@@ -203,6 +204,14 @@ func TestPublicAddrsAnnouncedOnce(t *testing.T) {
 // its handler is reset.
 func TestHostAdvertisesEarlyProtocolsFromCreation(t *testing.T) {
 	const id = protocol.ID("/idena-test/early/1.0.0")
+	earlyProtocolsMutex.Lock()
+	saved := append([]earlyProtocol(nil), earlyProtocols...)
+	earlyProtocolsMutex.Unlock()
+	t.Cleanup(func() {
+		earlyProtocolsMutex.Lock()
+		earlyProtocols = saved
+		earlyProtocolsMutex.Unlock()
+	})
 	AdvertiseFromStart(id, func(p protocol.ID) bool { return p == id })
 	node := newAnnouncingHost(t, &publicAddrs{}, "/ip4/9.9.9.9/tcp/1")
 	require.Contains(t, node.Mux().Protocols(), id)
@@ -213,6 +222,7 @@ func TestHostAdvertisesEarlyProtocolsFromCreation(t *testing.T) {
 	require.NoError(t, other.Connect(context.Background(), peer.AddrInfo{ID: node.ID(), Addrs: node.Addrs()}))
 	s, err := other.NewStream(context.Background(), node.ID(), id)
 	require.NoError(t, err)
+	require.NoError(t, s.SetReadDeadline(time.Now().Add(5*time.Second)))
 	_, err = s.Read(make([]byte, 1))
-	require.Error(t, err, "a stream before the protocol's handler was not reset")
+	require.ErrorIs(t, err, network.ErrReset, "a stream before the protocol's handler was not reset")
 }

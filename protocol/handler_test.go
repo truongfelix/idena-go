@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/idena-network/idena-go/config"
 	core "github.com/libp2p/go-libp2p/core"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -143,5 +144,46 @@ func TestRegisterIdenaStreamHandlerKeepsConnectionsWhenAdvertisedFromStart(t *te
 	}
 	if host.protocol != IdenaProtocol || host.streamFunc == nil {
 		t.Fatal("Idena stream handler was not registered")
+	}
+}
+
+type watchedNetwork struct {
+	network.Network
+	conns    []network.Conn
+	notifiee network.Notifiee
+}
+
+func (n *watchedNetwork) Conns() []network.Conn {
+	return n.conns
+}
+
+func (n *watchedNetwork) Notify(f network.Notifiee) {
+	n.notifiee = f
+}
+
+type watchedHost struct {
+	core.Host
+	net *watchedNetwork
+}
+
+func (h *watchedHost) Network() network.Network {
+	return h.net
+}
+
+// The connections open before the handler (kept since the protocol is advertised from the start) are dial
+// candidates at once, as the ones opened later.
+func TestWatchConnectionsTakesTheConnectionsAlreadyOpen(t *testing.T) {
+	open := &closableConn{remote: peer.ID("seed")}
+	net := &watchedNetwork{conns: []network.Conn{open}}
+	host := &watchedHost{net: net}
+	m := NewConnManager(host, config.P2P{})
+
+	watchConnections(host, m)
+
+	if net.notifiee == nil {
+		t.Fatal("the connections opened later are not followed")
+	}
+	if got := m.activeConnections[open.remote]; got != open {
+		t.Fatalf("stored = %v, want the connection open before the handler", got)
 	}
 }

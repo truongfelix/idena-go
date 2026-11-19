@@ -44,7 +44,9 @@ func registerEarlyProtocols(h host.Host) {
 	}
 }
 
-// resetStream answers a stream that arrives before the protocol's handler is set: the peer tries again later.
+// resetStream answers a stream that arrives before the protocol's handler is set, between the IPFS node's start and
+// the gossip handler's (12 s on a mainnet start, the database compaction runs before): the peer's handshake fails,
+// which puts it on no waiting list, and it tries again on its next dial tick.
 func resetStream(s network.Stream) {
 	_ = s.Reset()
 }
