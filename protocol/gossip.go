@@ -17,6 +17,7 @@ import (
 	"github.com/idena-network/idena-go/core/mempool"
 	"github.com/idena-network/idena-go/core/state/snapshot"
 	"github.com/idena-network/idena-go/events"
+	"github.com/idena-network/idena-go/ipfs"
 	"github.com/idena-network/idena-go/log"
 	"github.com/idena-network/idena-go/pengings"
 	models "github.com/idena-network/idena-go/protobuf"
@@ -26,6 +27,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
 	"github.com/pkg/errors"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -179,13 +181,23 @@ func (h *IdenaGossipHandler) Start() {
 	go h.watchShardSubscription()
 }
 
-// registerIdenaStreamHandler reconnects peers established while the embedded
-// IPFS node was starting. Legacy peers otherwise retain an Identify snapshot
-// that does not advertise the handler registered later during node startup.
+func init() {
+	matcher, _ := multistreamSemverMatcher(IdenaProtocol)
+	ipfs.AdvertiseFromStart(IdenaProtocol, matcher)
+}
+
+// registerIdenaStreamHandler sets the Idena stream handler. The IPFS node's host advertises the protocol from its
+// creation (ipfs.AdvertiseFromStart), so every peer saw it when it connected. On a host that did not, it reconnects
+// the peers established while the embedded IPFS node was starting: legacy peers otherwise retain an Identify
+// snapshot that does not advertise the handler registered later during node startup.
 func registerIdenaStreamHandler(host core.Host, handler network.StreamHandler) (reconnectTargets []peer.AddrInfo, closed, failed int) {
+	advertised := slices.Contains(host.Mux().Protocols(), IdenaProtocol)
 	preexistingPeers := append([]peer.ID(nil), host.Network().Peers()...)
 	matcher, _ := multistreamSemverMatcher(IdenaProtocol)
 	host.SetStreamHandlerMatch(IdenaProtocol, matcher, handler)
+	if advertised {
+		return nil, 0, 0
+	}
 
 	for _, id := range preexistingPeers {
 		peerInfo := host.Peerstore().PeerInfo(id)

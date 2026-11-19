@@ -36,6 +36,21 @@ type recordingHost struct {
 	matcher    func(libp2pprotocol.ID) bool
 	streamFunc network.StreamHandler
 	connected  []peer.AddrInfo
+	advertised []libp2pprotocol.ID
+}
+
+// recordingMux lists the protocols the host advertised before the Idena handler is set.
+type recordingMux struct {
+	libp2pprotocol.Switch
+	protocols []libp2pprotocol.ID
+}
+
+func (m *recordingMux) Protocols() []libp2pprotocol.ID {
+	return m.protocols
+}
+
+func (h *recordingHost) Mux() libp2pprotocol.Switch {
+	return &recordingMux{protocols: h.advertised}
 }
 
 type recordingPeerstore struct {
@@ -107,5 +122,26 @@ func TestRegisterIdenaStreamHandlerRefreshesPreexistingPeers(t *testing.T) {
 	}
 	if len(host.connected) != 1 || host.connected[0].ID != peerA {
 		t.Fatalf("connected peers = %v, want peer %s", host.connected, peerA)
+	}
+}
+
+// A host that advertised the Idena protocol from its creation keeps its connections: every peer saw the protocol
+// when it connected, and the relay reservations stay.
+func TestRegisterIdenaStreamHandlerKeepsConnectionsWhenAdvertisedFromStart(t *testing.T) {
+	peerA := peer.ID("peer-a")
+	networkRecorder := &recordingNetwork{peers: []peer.ID{peerA}}
+	host := &recordingHost{
+		network:    networkRecorder,
+		peerstore:  &recordingPeerstore{peerInfo: map[peer.ID]peer.AddrInfo{peerA: {ID: peerA}}},
+		advertised: []libp2pprotocol.ID{"/ipfs/id/1.0.0", IdenaProtocol},
+	}
+
+	reconnectTargets, closed, failed := registerIdenaStreamHandler(host, func(network.Stream) {})
+
+	if closed != 0 || failed != 0 || len(reconnectTargets) != 0 || len(networkRecorder.closed) != 0 {
+		t.Fatalf("closed %v (%d, %d), reconnect %v: want no connection closed", networkRecorder.closed, closed, failed, reconnectTargets)
+	}
+	if host.protocol != IdenaProtocol || host.streamFunc == nil {
+		t.Fatal("Idena stream handler was not registered")
 	}
 }
