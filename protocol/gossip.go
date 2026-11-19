@@ -73,6 +73,7 @@ type IdenaGossipHandler struct {
 	ceremonyChecker  CeremonyChecker
 	connManager      *ConnManager
 	pubsub           *pubsub.PubSub
+	exchange         *peerExchange
 }
 
 type metricCollector struct {
@@ -110,6 +111,7 @@ func NewIdenaGossipHandler(host core.Host, pubsub *pubsub.PubSub, cfg config.P2P
 		ceremonyChecker:     ceremonyChecker,
 		connManager:         NewConnManager(host, cfg),
 	}
+	handler.exchange = newPeerExchange(handler)
 	handler.pushPullManager.AddEntryHolder(pushVote, pushpull.NewDefaultHolder(1, pushpull.NewDefaultPushTracker(time.Millisecond*300)))
 	handler.pushPullManager.AddEntryHolder(pushBlock, pushpull.NewDefaultHolder(2, pushpull.NewDefaultPushTracker(time.Second*3)))
 	handler.pushPullManager.AddEntryHolder(pushProof, pushpull.NewDefaultHolder(1, pushpull.NewDefaultPushTracker(time.Second*1)))
@@ -134,6 +136,7 @@ func (h *IdenaGossipHandler) Start() {
 			connManager: h.connManager,
 		}
 		host.Network().Notify(notifiee)
+		h.exchange.register(host)
 		go func() {
 			connected, reconnectFailed := reconnectIdenaPeers(host, reconnectTargets)
 			if connected > 0 || reconnectFailed > 0 {
@@ -216,14 +219,19 @@ func reconnectIdenaPeers(host core.Host, peers []peer.AddrInfo) (connected, fail
 func (h *IdenaGossipHandler) background() {
 	dialTicker := time.NewTicker(time.Second * 15)
 	renewTicker := time.NewTicker(time.Minute * 5)
+	// Peer exchange runs a minute after the start (AutoNAT has answered by then), then with each renewal.
+	exchangeStart := time.After(time.Minute)
 
 	for {
 		select {
 		case <-dialTicker.C:
 			h.dialPeers()
 			h.dialDirectPeers()
+		case <-exchangeStart:
+			go h.exchange.round()
 		case <-renewTicker.C:
 			h.renewPeers()
+			go h.exchange.round()
 		}
 	}
 }
@@ -655,6 +663,7 @@ func (h *IdenaGossipHandler) unregisterPeer(peerId peer.ID) {
 	}
 
 	h.connManager.Disconnected(peerId, err)
+	h.exchange.forget(peerId)
 	h.host.ConnManager().UntagPeer(peerId, "idena")
 	if peer.disconnectReason == "" {
 		h.log.Info("Peer disconnected", "id", peerId.String(), "shardId", peer.shardId)
