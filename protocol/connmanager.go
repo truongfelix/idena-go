@@ -187,6 +187,18 @@ func (m *ConnManager) AddCandidate(id peer.ID, until time.Time) {
 	m.candidates[id] = until
 }
 
+// DropCandidate forgets a node peer exchange shared.
+func (m *ConnManager) DropCandidate(id peer.ID) {
+	m.peerMutex.Lock()
+	defer m.peerMutex.Unlock()
+	delete(m.candidates, id)
+}
+
+// PrefersCandidates tells whether shared nodes go first: only without shards, where any peer fills the slot.
+func (m *ConnManager) PrefersCandidates() bool {
+	return m.ownShardId == common.MultiShard
+}
+
 func (m *ConnManager) IsCandidate(id peer.ID) bool {
 	m.peerMutex.RLock()
 	defer m.peerMutex.RUnlock()
@@ -257,7 +269,7 @@ func (m *ConnManager) DialRandomPeer() (network.Stream, error) {
 	// The nodes peer exchange shared go first: they have free incoming slots that no other pick fills. Only without
 	// shards, where any peer fills the slot: a shard need takes the usual pick. Both share the attempts.
 	attempt := 0
-	if m.ownShardId == common.MultiShard {
+	if m.PrefersCandidates() {
 		var preferred []network.Conn
 		for _, c := range filteredConns {
 			if m.preferCandidate(c.RemotePeer()) {

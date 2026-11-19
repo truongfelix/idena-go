@@ -687,13 +687,16 @@ func (h *IdenaGossipHandler) dialPeers() {
 			}
 			id := stream.Conn().RemotePeer()
 			peer := h.peers.Peer(id)
-			if peer == nil {
-				if _, ok := attempts[id]; !ok {
-					attempts[id] = struct{}{}
-					if _, err := h.runPeer(stream, false); err != nil {
-						h.log.Debug("failed to run outbound peer", "err", err)
-					}
-				}
+			if _, tried := attempts[id]; peer != nil || tried {
+				// A new stream to a peer already connected or already tried in this call.
+				_ = stream.Reset()
+				continue
+			}
+			attempts[id] = struct{}{}
+			if _, err := h.runPeer(stream, false); err != nil {
+				h.log.Debug("failed to run outbound peer", "err", err)
+				// A shared node that fails its handshake stops going first.
+				h.connManager.DropCandidate(id)
 			}
 		}
 	}()

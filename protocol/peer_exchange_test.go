@@ -276,6 +276,9 @@ func TestIsRelayAddrAcceptsOnlyACircuitThroughAPublicRelay(t *testing.T) {
 		"/p2p-circuit":                               false,
 		"/ip4/1.2.3.4/tcp/4001" + relay + relay:      false, // nested circuit
 		"/ip4/1.2.3.4/tcp/4001":                      false,
+		"/dns4/router.example/tcp/80" + relay:        false, // a name that may resolve to the local network
+		"/ip4/10.0.0.1/ip4/1.2.3.4/tcp/4001" + relay: false,
+		"/ip4/1.2.3.4/udp/4001/quic-v1" + relay:      false,
 	} {
 		require.Equal(t, want, isRelayAddr(mustAddr(t, addr)), addr)
 	}
@@ -325,4 +328,43 @@ func TestPeerExchangeRoundDialsNothingWithoutAFreeOutgoingSlot(t *testing.T) {
 
 	asker.exchange.round()
 	require.Zero(t, candidateCount(asker))
+}
+
+func TestPeerExchangeListingExpires(t *testing.T) {
+	sharerHost, askerHost, listedHost := newExchangeHost(t), newExchangeHost(t), newExchangeHost(t)
+	sharer := newExchangeNode(t, sharerHost, config.P2P{})
+	asker := newExchangeNode(t, askerHost, config.P2P{})
+	listed := newExchangeNode(t, listedHost, config.P2P{})
+	connectHosts(t, askerHost, sharerHost)
+	connectHosts(t, listedHost, sharerHost)
+	addIdenaPeer(t, sharer, askerHost.ID(), true)
+	addIdenaPeer(t, sharer, listedHost.ID(), true)
+	sharerHost.Peerstore().AddAddrs(listedHost.ID(), []multiaddr.Multiaddr{mustAddr(t, "/ip4/1.2.3.4/tcp/4001/p2p/"+relayPeerId+"/p2p-circuit")}, peerstore.PermanentAddrTTL)
+	_, err := listed.exchange.ask(sharerHost.ID(), true)
+	require.NoError(t, err)
+
+	// It has not asked again for longer than a listing lasts.
+	sharer.exchange.mutex.Lock()
+	sharer.exchange.listed[listedHost.ID()] = time.Now().Add(-peerExchangeListingTTL - time.Second)
+	sharer.exchange.mutex.Unlock()
+	got, err := asker.exchange.ask(sharerHost.ID(), false)
+	require.NoError(t, err)
+	require.Empty(t, got)
+}
+
+func TestPeerExchangeRateLimitHoldsAcrossAReconnect(t *testing.T) {
+	sharerHost, askerHost := newExchangeHost(t), newExchangeHost(t)
+	sharer := newExchangeNode(t, sharerHost, config.P2P{})
+	asker := newExchangeNode(t, askerHost, config.P2P{})
+	connectHosts(t, askerHost, sharerHost)
+	addIdenaPeer(t, sharer, askerHost.ID(), true)
+	_, err := asker.exchange.ask(sharerHost.ID(), false)
+	require.NoError(t, err)
+
+	// It leaves and connects again at once.
+	require.NoError(t, sharer.peers.Unregister(askerHost.ID()))
+	sharer.exchange.forget(askerHost.ID())
+	addIdenaPeer(t, sharer, askerHost.ID(), true)
+	_, err = asker.exchange.ask(sharerHost.ID(), false)
+	require.Error(t, err, "a reconnect bypassed the interval")
 }

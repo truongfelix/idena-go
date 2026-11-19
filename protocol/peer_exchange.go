@@ -39,9 +39,12 @@ const (
 	peerExchangeMaxDials   = 3
 	// peerExchangeCandidateTTL is how long a shared node is preferred when this node picks its next outgoing peer.
 	peerExchangeCandidateTTL = 15 * time.Minute
-	peerExchangeTimeout      = 30 * time.Second
-	peerExchangeTag          = "idena-peer-exchange"
-	peerExchangeTagWeight    = 20
+	// peerExchangeListingTTL is how long a peer stays listed after it last asked: it asks again on its rounds while it
+	// still has free incoming slots and no open port.
+	peerExchangeListingTTL = 15 * time.Minute
+	peerExchangeTimeout    = 30 * time.Second
+	peerExchangeTag        = "idena-peer-exchange"
+	peerExchangeTagWeight  = 20
 )
 
 type peerExchangeRequest struct {
@@ -62,8 +65,9 @@ type peerExchangeResponse struct {
 type peerExchange struct {
 	handler *IdenaGossipHandler
 
-	mutex        sync.Mutex
-	listed       map[peer.ID]struct{}
+	mutex sync.Mutex
+	// listed holds when each peer last asked to be listed: a listing lasts peerExchangeListingTTL.
+	listed       map[peer.ID]time.Time
 	lastRequests map[peer.ID]time.Time
 
 	reachability sync.Mutex
@@ -74,7 +78,7 @@ type peerExchange struct {
 func newPeerExchange(handler *IdenaGossipHandler) *peerExchange {
 	return &peerExchange{
 		handler:      handler,
-		listed:       make(map[peer.ID]struct{}),
+		listed:       make(map[peer.ID]time.Time),
 		lastRequests: make(map[peer.ID]time.Time),
 	}
 }
@@ -126,7 +130,7 @@ func (e *peerExchange) forget(id peer.ID) {
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
 	delete(e.listed, id)
-	delete(e.lastRequests, id)
+	// lastRequests stays: a peer that reconnects waits out the interval too. serve ages it out.
 }
 
 // mayAsk tells whether a peer may open the protocol here: an incoming Idena peer or a direct peer.
@@ -155,6 +159,11 @@ func (e *peerExchange) serve(stream network.Stream) {
 
 	now := time.Now()
 	e.mutex.Lock()
+	for id, at := range e.lastRequests {
+		if now.Sub(at) >= peerExchangeMinInterval {
+			delete(e.lastRequests, id)
+		}
+	}
 	if last, ok := e.lastRequests[from]; ok && now.Sub(last) < peerExchangeMinInterval {
 		e.mutex.Unlock()
 		_ = stream.Reset()
@@ -168,7 +177,7 @@ func (e *peerExchange) serve(stream network.Stream) {
 	}
 	e.lastRequests[from] = now
 	if req.ListMe {
-		e.listed[from] = struct{}{}
+		e.listed[from] = now
 	} else {
 		delete(e.listed, from)
 	}
@@ -185,7 +194,12 @@ func (e *peerExchange) serve(stream network.Stream) {
 func (e *peerExchange) entriesFor(asking peer.ID) []peerExchangeEntry {
 	e.mutex.Lock()
 	ids := make([]peer.ID, 0, len(e.listed))
-	for id := range e.listed {
+	now := time.Now()
+	for id, at := range e.listed {
+		if now.Sub(at) > peerExchangeListingTTL {
+			delete(e.listed, id)
+			continue
+		}
 		if id != asking {
 			ids = append(ids, id)
 		}
@@ -226,20 +240,16 @@ func relayAddrs(addrs []multiaddr.Multiaddr) []string {
 	return res
 }
 
-// isRelayAddr accepts <public address>/p2p/<relay>/p2p-circuit only: one circuit, at the end, through a relay at a
-// public address, so an answer cannot have this node dial its own network.
+// isRelayAddr accepts /ip4|ip6/<public IP>/tcp/<port>/p2p/<relay>/p2p-circuit only (Idena's IPFS runs TCP alone): no
+// DNS name, one IP, one circuit, so an answer cannot have this node dial its own network.
 func isRelayAddr(a multiaddr.Multiaddr) bool {
-	circuits, at := 0, -1
-	for i, c := range a {
-		if c.Code() == multiaddr.P_CIRCUIT {
-			circuits++
-			at = i
-		}
-	}
-	if circuits != 1 || at < 2 || at != len(a)-1 || a[at-1].Code() != multiaddr.P_P2P {
+	if len(a) != 4 || a[1].Code() != multiaddr.P_TCP || a[2].Code() != multiaddr.P_P2P || a[3].Code() != multiaddr.P_CIRCUIT {
 		return false
 	}
-	return manet.IsPublicAddr(a[:at])
+	if code := a[0].Code(); code != multiaddr.P_IP4 && code != multiaddr.P_IP6 {
+		return false
+	}
+	return manet.IsPublicAddr(a[:1])
 }
 
 // wantsListing tells whether this node asks to be shared: it has no open port and free incoming slots.
@@ -271,7 +281,7 @@ func (e *peerExchange) askTargets() []peer.ID {
 func (e *peerExchange) round() {
 	listMe := e.wantsListing()
 	// A shared node is dialed only when an outgoing slot can take it.
-	canDial := e.handler.connManager.CanDial() || e.handler.connManager.NeedOutboundOwnShardPeers()
+	canDial := e.handler.connManager.PrefersCandidates() && e.handler.connManager.CanDial()
 	dials, answers, shared := 0, 0, 0
 	targets := e.askTargets()
 	for _, target := range targets {
