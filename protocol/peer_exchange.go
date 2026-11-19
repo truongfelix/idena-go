@@ -281,7 +281,8 @@ func (e *peerExchange) askTargets() []peer.ID {
 func (e *peerExchange) round() {
 	listMe := e.wantsListing()
 	// A shared node is dialed only when an outgoing slot can take it.
-	canDial := e.handler.connManager.PrefersCandidates() && e.handler.connManager.CanDial()
+	cm := e.handler.connManager
+	canDial := cm.PrefersCandidates() && cm.CanDial() && cm.CanTakeCandidate()
 	dials, answers, shared := 0, 0, 0
 	targets := e.askTargets()
 	for _, target := range targets {

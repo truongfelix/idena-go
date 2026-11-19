@@ -368,3 +368,41 @@ func TestPeerExchangeRateLimitHoldsAcrossAReconnect(t *testing.T) {
 	_, err = asker.exchange.ask(sharerHost.ID(), false)
 	require.Error(t, err, "a reconnect bypassed the interval")
 }
+
+func TestDropCandidateRemovesItsTag(t *testing.T) {
+	host := newExchangeHost(t)
+	m := NewConnManager(host, config.P2P{})
+	id := newExchangeHost(t).ID()
+	m.AddCandidate(id, time.Now().Add(time.Minute))
+	host.ConnManager().TagPeer(id, peerExchangeTag, peerExchangeTagWeight)
+
+	m.DropCandidate(id)
+	require.False(t, m.IsCandidate(id))
+	info := host.ConnManager().GetTagInfo(id)
+	if info != nil {
+		_, tagged := info.Tags[peerExchangeTag]
+		require.False(t, tagged, "the dropped candidate kept its tag")
+	}
+}
+
+func TestPeerExchangeRoundDialsNothingOnceItsShareIsTaken(t *testing.T) {
+	sharer := newExchangeNode(t, newExchangeHost(t), config.P2P{})
+	listTwoPeers(t, sharer)
+	asker := newRoundNode(t, sharer, 4)
+	// Half of its outgoing slots (2 of 4) came from peer exchange already.
+	for _, id := range []peer.ID{"a1", "a2"} {
+		asker.connManager.AddCandidate(id, time.Now().Add(time.Minute))
+		asker.connManager.Connected(id, false, 0)
+	}
+	require.False(t, asker.connManager.CanTakeCandidate())
+
+	asker.exchange.round()
+	require.Zero(t, candidateCount(asker))
+}
+
+func TestADirectPeerStopsBeingACandidate(t *testing.T) {
+	m, direct := newDirectPeerTestManager(t, config.P2P{})
+	m.AddCandidate(direct, time.Now().Add(time.Minute))
+	m.Connected(direct, false, 0)
+	require.False(t, m.IsCandidate(direct))
+}

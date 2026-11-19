@@ -125,6 +125,9 @@ func (m *ConnManager) waitsAfterDisconnect(id peer.ID) bool {
 
 func (m *ConnManager) Connected(id peer.ID, inbound bool, shardId common.ShardId) {
 	if m.IsDirectPeer(id) {
+		m.peerMutex.Lock()
+		delete(m.candidates, id)
+		m.peerMutex.Unlock()
 		return
 	}
 	m.peerMutex.Lock()
@@ -187,11 +190,21 @@ func (m *ConnManager) AddCandidate(id peer.ID, until time.Time) {
 	m.candidates[id] = until
 }
 
-// DropCandidate forgets a node peer exchange shared.
+// DropCandidate forgets a node peer exchange shared, and the tag that kept its connection.
 func (m *ConnManager) DropCandidate(id peer.ID) {
 	m.peerMutex.Lock()
-	defer m.peerMutex.Unlock()
 	delete(m.candidates, id)
+	m.peerMutex.Unlock()
+	if m.host != nil {
+		m.host.ConnManager().UntagPeer(id, peerExchangeTag)
+	}
+}
+
+// CanTakeCandidate tells whether an outgoing slot is left for a node peer exchange shares.
+func (m *ConnManager) CanTakeCandidate() bool {
+	m.peerMutex.RLock()
+	defer m.peerMutex.RUnlock()
+	return len(m.exchangeOut) < m.exchangeOutCap()
 }
 
 // PrefersCandidates tells whether shared nodes go first: only without shards, where any peer fills the slot.
@@ -284,6 +297,8 @@ func (m *ConnManager) DialRandomPeer() (network.Stream, error) {
 				return stream, nil
 			}
 			failed[preferred[idx].RemotePeer()] = struct{}{}
+			// Its stream does not open (no direct connection yet, or it hangs): it stops going first.
+			m.DropCandidate(preferred[idx].RemotePeer())
 			preferred[idx] = preferred[len(preferred)-1]
 			preferred = preferred[:len(preferred)-1]
 		}
