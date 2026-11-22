@@ -75,6 +75,7 @@ type IdenaGossipHandler struct {
 	ceremonyChecker  CeremonyChecker
 	connManager      *ConnManager
 	pubsub           *pubsub.PubSub
+	exchange         *peerExchange
 }
 
 type metricCollector struct {
@@ -112,6 +113,7 @@ func NewIdenaGossipHandler(host core.Host, pubsub *pubsub.PubSub, cfg config.P2P
 		ceremonyChecker:     ceremonyChecker,
 		connManager:         NewConnManager(host, cfg),
 	}
+	handler.exchange = newPeerExchange(handler)
 	handler.pushPullManager.AddEntryHolder(pushVote, pushpull.NewDefaultHolder(1, pushpull.NewDefaultPushTracker(time.Millisecond*300)))
 	handler.pushPullManager.AddEntryHolder(pushBlock, pushpull.NewDefaultHolder(2, pushpull.NewDefaultPushTracker(time.Second*3)))
 	handler.pushPullManager.AddEntryHolder(pushProof, pushpull.NewDefaultHolder(1, pushpull.NewDefaultPushTracker(time.Second*1)))
@@ -135,6 +137,7 @@ func (h *IdenaGossipHandler) Start() {
 		if closed > 0 || failed > 0 {
 			h.log.Info("Refreshed Idena protocol advertisement", "closedPeers", closed, "failedPeers", failed)
 		}
+		h.exchange.register(host)
 		go func() {
 			connected, reconnectFailed := reconnectIdenaPeers(host, reconnectTargets)
 			if connected > 0 || reconnectFailed > 0 {
@@ -245,14 +248,19 @@ func reconnectIdenaPeers(host core.Host, peers []peer.AddrInfo) (connected, fail
 func (h *IdenaGossipHandler) background() {
 	dialTicker := time.NewTicker(time.Second * 15)
 	renewTicker := time.NewTicker(time.Minute * 5)
+	// Peer exchange runs a minute after the start (AutoNAT has answered by then), then with each renewal.
+	exchangeStart := time.After(time.Minute)
 
 	for {
 		select {
 		case <-dialTicker.C:
 			h.dialPeers()
 			h.dialDirectPeers()
+		case <-exchangeStart:
+			go h.exchange.round()
 		case <-renewTicker.C:
 			h.renewPeers()
+			go h.exchange.round()
 		}
 	}
 }
@@ -684,7 +692,9 @@ func (h *IdenaGossipHandler) unregisterPeer(peerId peer.ID) {
 	}
 
 	h.connManager.Disconnected(peerId, err)
+	h.exchange.forget(peerId)
 	h.host.ConnManager().UntagPeer(peerId, "idena")
+	h.host.ConnManager().UntagPeer(peerId, peerExchangeTag)
 	if peer.disconnectReason == "" {
 		h.log.Info("Peer disconnected", "id", peerId.String(), "shardId", peer.shardId)
 	} else {
@@ -706,13 +716,16 @@ func (h *IdenaGossipHandler) dialPeers() {
 			}
 			id := stream.Conn().RemotePeer()
 			peer := h.peers.Peer(id)
-			if peer == nil {
-				if _, ok := attempts[id]; !ok {
-					attempts[id] = struct{}{}
-					if _, err := h.runPeer(stream, false); err != nil {
-						h.log.Debug("failed to run outbound peer", "err", err)
-					}
-				}
+			if _, tried := attempts[id]; peer != nil || tried {
+				// A new stream to a peer already connected or already tried in this call.
+				_ = stream.Reset()
+				continue
+			}
+			attempts[id] = struct{}{}
+			if _, err := h.runPeer(stream, false); err != nil {
+				h.log.Debug("failed to run outbound peer", "err", err)
+				// A shared node that fails its handshake stops going first.
+				h.connManager.DropCandidate(id)
 			}
 		}
 	}()

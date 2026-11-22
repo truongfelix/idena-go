@@ -36,6 +36,12 @@ type ConnManager struct {
 	// every slot count and every disconnect choice reads: never refused for want of a slot, never picked to make room.
 	directPeers map[peer.ID]struct{}
 
+	// candidates are the nodes peer exchange shared (until the time given): the next outgoing peer is taken among them
+	// first. exchangeOut are the outgoing peers taken that way, at most exchangeOutCap so that the others still come
+	// from the usual pick.
+	candidates  map[peer.ID]time.Time
+	exchangeOut map[peer.ID]struct{}
+
 	peerMutex sync.RWMutex
 	connMutex sync.Mutex
 	host      core.Host
@@ -59,6 +65,8 @@ func NewConnManager(host core.Host, cfg config.P2P) *ConnManager {
 		inboundPeers:      make(map[peer.ID]common.ShardId),
 		outboundPeers:     make(map[peer.ID]common.ShardId),
 		directPeers:       directPeers,
+		candidates:        make(map[peer.ID]time.Time),
+		exchangeOut:       make(map[peer.ID]struct{}),
 		discTimes:         make(map[peer.ID]time.Time),
 		resetTimes:        make(map[peer.ID]time.Time),
 	}
@@ -84,13 +92,7 @@ func (m *ConnManager) CanConnect(id peer.ID) bool {
 	if m.bannedPeers.Contains(id) {
 		return false
 	}
-	m.peerMutex.RLock()
-	defer m.peerMutex.RUnlock()
-	if discTime, ok := m.discTimes[id]; ok && time.Now().UTC().Sub(discTime) < ReconnectAfterDiscTimeout {
-		return false
-	}
-
-	if resetTime, ok := m.resetTimes[id]; ok && time.Now().UTC().Sub(resetTime) < ReconnectAfterResetTimeout {
+	if m.waitsAfterDisconnect(id) {
 		return false
 	}
 	if m.host.Network().Connectedness(id) != network.Connected {
@@ -108,8 +110,24 @@ func (m *ConnManager) CanConnect(id peer.ID) bool {
 	return false
 }
 
+// waitsAfterDisconnect tells whether id left or reset its stream too recently to be connected again.
+func (m *ConnManager) waitsAfterDisconnect(id peer.ID) bool {
+	m.peerMutex.RLock()
+	defer m.peerMutex.RUnlock()
+	if discTime, ok := m.discTimes[id]; ok && time.Now().UTC().Sub(discTime) < ReconnectAfterDiscTimeout {
+		return true
+	}
+	if resetTime, ok := m.resetTimes[id]; ok && time.Now().UTC().Sub(resetTime) < ReconnectAfterResetTimeout {
+		return true
+	}
+	return false
+}
+
 func (m *ConnManager) Connected(id peer.ID, inbound bool, shardId common.ShardId) {
 	if m.IsDirectPeer(id) {
+		m.peerMutex.Lock()
+		delete(m.candidates, id)
+		m.peerMutex.Unlock()
 		return
 	}
 	m.peerMutex.Lock()
@@ -118,7 +136,11 @@ func (m *ConnManager) Connected(id peer.ID, inbound bool, shardId common.ShardId
 		m.inboundPeers[id] = shardId
 	} else {
 		m.outboundPeers[id] = shardId
+		if _, ok := m.candidates[id]; ok && len(m.exchangeOut) < m.exchangeOutCap() {
+			m.exchangeOut[id] = struct{}{}
+		}
 	}
+	delete(m.candidates, id)
 }
 
 func (m *ConnManager) UpdatePeerShardId(id peer.ID, shardId common.ShardId) {
@@ -150,6 +172,79 @@ func (m *ConnManager) Disconnected(id peer.ID, reason error) {
 	}
 	delete(m.inboundPeers, id)
 	delete(m.outboundPeers, id)
+	delete(m.exchangeOut, id)
+}
+
+// exchangeOutCap is how many outgoing peers may come from peer exchange: half of them, at least one.
+func (m *ConnManager) exchangeOutCap() int {
+	if c := (m.MaxOutboundPeers() + m.MaxOutboundOwnPeers()) / 2; c > 0 {
+		return c
+	}
+	return 1
+}
+
+// AddCandidate keeps a node peer exchange shared until the given time.
+func (m *ConnManager) AddCandidate(id peer.ID, until time.Time) {
+	m.peerMutex.Lock()
+	defer m.peerMutex.Unlock()
+	m.candidates[id] = until
+}
+
+// DropCandidate forgets a node peer exchange shared, and the tag that kept its connection.
+func (m *ConnManager) DropCandidate(id peer.ID) {
+	m.peerMutex.Lock()
+	delete(m.candidates, id)
+	m.peerMutex.Unlock()
+	if m.host != nil {
+		m.host.ConnManager().UntagPeer(id, peerExchangeTag)
+	}
+}
+
+// CanTakeCandidate tells whether an outgoing slot is left for a node peer exchange shares.
+func (m *ConnManager) CanTakeCandidate() bool {
+	m.peerMutex.RLock()
+	defer m.peerMutex.RUnlock()
+	return len(m.exchangeOut) < m.exchangeOutCap()
+}
+
+// PrefersCandidates tells whether shared nodes go first: only without shards, where any peer fills the slot.
+func (m *ConnManager) PrefersCandidates() bool {
+	return m.ownShardId == common.MultiShard
+}
+
+func (m *ConnManager) IsCandidate(id peer.ID) bool {
+	m.peerMutex.RLock()
+	defer m.peerMutex.RUnlock()
+	_, ok := m.candidates[id]
+	return ok
+}
+
+// PruneCandidates forgets the candidates kept until before now, calling dropped for each.
+func (m *ConnManager) PruneCandidates(now time.Time, dropped func(peer.ID)) {
+	m.peerMutex.Lock()
+	var gone []peer.ID
+	for id, until := range m.candidates {
+		if now.After(until) {
+			delete(m.candidates, id)
+			gone = append(gone, id)
+		}
+	}
+	m.peerMutex.Unlock()
+	for _, id := range gone {
+		dropped(id)
+	}
+}
+
+// preferCandidate tells whether the next outgoing peer is taken among the candidates first.
+func (m *ConnManager) preferCandidate(id peer.ID) bool {
+	m.peerMutex.RLock()
+	defer m.peerMutex.RUnlock()
+	_, ok := m.candidates[id]
+	return ok && len(m.exchangeOut) < m.exchangeOutCap()
+}
+
+func (m *ConnManager) IsBanned(id peer.ID) bool {
+	return m.bannedPeers.Contains(id)
 }
 
 func (m *ConnManager) BanPeer(id peer.ID) {
@@ -184,7 +279,44 @@ func (m *ConnManager) DialRandomPeer() (network.Stream, error) {
 		return nil, NoPeersToDial
 	}
 
-	for attempt := 0; attempt < dialPeerAttempts; attempt++ {
+	// The nodes peer exchange shared go first: they have free incoming slots that no other pick fills. Only without
+	// shards, where any peer fills the slot: a shard need takes the usual pick. Both share the attempts.
+	attempt := 0
+	if m.PrefersCandidates() {
+		var preferred []network.Conn
+		for _, c := range filteredConns {
+			if m.preferCandidate(c.RemotePeer()) {
+				preferred = append(preferred, c)
+			}
+		}
+		failed := make(map[peer.ID]struct{})
+		for len(preferred) > 0 && attempt < dialPeerAttempts {
+			attempt++
+			idx := secureIntn(len(preferred))
+			if stream, err := m.findOrOpenStream(preferred[idx]); err == nil {
+				return stream, nil
+			}
+			failed[preferred[idx].RemotePeer()] = struct{}{}
+			// Its stream does not open (no direct connection yet, or it hangs): it stops going first.
+			m.DropCandidate(preferred[idx].RemotePeer())
+			preferred[idx] = preferred[len(preferred)-1]
+			preferred = preferred[:len(preferred)-1]
+		}
+		if len(failed) > 0 {
+			left := filteredConns[:0]
+			for _, c := range filteredConns {
+				if _, ok := failed[c.RemotePeer()]; !ok {
+					left = append(left, c)
+				}
+			}
+			filteredConns = left
+			if len(filteredConns) == 0 {
+				return nil, FailedToDialPeer
+			}
+		}
+	}
+
+	for ; attempt < dialPeerAttempts; attempt++ {
 		idx := secureIntn(len(filteredConns))
 		conn := filteredConns[idx]
 
