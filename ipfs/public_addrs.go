@@ -146,6 +146,11 @@ func (p *publicAddrs) hostOption() kubolibp2p.HostOption {
 			}
 			return p.appendTo(addrs)
 		}
-		return cfg.NewNode()
+		h, err := cfg.NewNode()
+		if err != nil {
+			return nil, err
+		}
+		registerEarlyProtocols(h)
+		return h, nil
 	}
 }

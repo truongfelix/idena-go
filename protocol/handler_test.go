@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/idena-network/idena-go/config"
 	core "github.com/libp2p/go-libp2p/core"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -36,6 +37,21 @@ type recordingHost struct {
 	matcher    func(libp2pprotocol.ID) bool
 	streamFunc network.StreamHandler
 	connected  []peer.AddrInfo
+	advertised []libp2pprotocol.ID
+}
+
+// recordingMux lists the protocols the host advertised before the Idena handler is set.
+type recordingMux struct {
+	libp2pprotocol.Switch
+	protocols []libp2pprotocol.ID
+}
+
+func (m *recordingMux) Protocols() []libp2pprotocol.ID {
+	return m.protocols
+}
+
+func (h *recordingHost) Mux() libp2pprotocol.Switch {
+	return &recordingMux{protocols: h.advertised}
 }
 
 type recordingPeerstore struct {
@@ -107,5 +123,67 @@ func TestRegisterIdenaStreamHandlerRefreshesPreexistingPeers(t *testing.T) {
 	}
 	if len(host.connected) != 1 || host.connected[0].ID != peerA {
 		t.Fatalf("connected peers = %v, want peer %s", host.connected, peerA)
+	}
+}
+
+// A host that advertised the Idena protocol from its creation keeps its connections: every peer saw the protocol
+// when it connected, and the relay reservations stay.
+func TestRegisterIdenaStreamHandlerKeepsConnectionsWhenAdvertisedFromStart(t *testing.T) {
+	peerA := peer.ID("peer-a")
+	networkRecorder := &recordingNetwork{peers: []peer.ID{peerA}}
+	host := &recordingHost{
+		network:    networkRecorder,
+		peerstore:  &recordingPeerstore{peerInfo: map[peer.ID]peer.AddrInfo{peerA: {ID: peerA}}},
+		advertised: []libp2pprotocol.ID{"/ipfs/id/1.0.0", IdenaProtocol},
+	}
+
+	reconnectTargets, closed, failed := registerIdenaStreamHandler(host, func(network.Stream) {})
+
+	if closed != 0 || failed != 0 || len(reconnectTargets) != 0 || len(networkRecorder.closed) != 0 {
+		t.Fatalf("closed %v (%d, %d), reconnect %v: want no connection closed", networkRecorder.closed, closed, failed, reconnectTargets)
+	}
+	if host.protocol != IdenaProtocol || host.streamFunc == nil {
+		t.Fatal("Idena stream handler was not registered")
+	}
+}
+
+type watchedNetwork struct {
+	network.Network
+	conns    []network.Conn
+	notifiee network.Notifiee
+}
+
+func (n *watchedNetwork) Conns() []network.Conn {
+	return n.conns
+}
+
+func (n *watchedNetwork) Notify(f network.Notifiee) {
+	n.notifiee = f
+}
+
+type watchedHost struct {
+	core.Host
+	net *watchedNetwork
+}
+
+func (h *watchedHost) Network() network.Network {
+	return h.net
+}
+
+// The connections open before the handler (kept since the protocol is advertised from the start) are dial
+// candidates at once, as the ones opened later.
+func TestWatchConnectionsTakesTheConnectionsAlreadyOpen(t *testing.T) {
+	open := &closableConn{remote: peer.ID("seed")}
+	net := &watchedNetwork{conns: []network.Conn{open}}
+	host := &watchedHost{net: net}
+	m := NewConnManager(host, config.P2P{})
+
+	watchConnections(host, m)
+
+	if net.notifiee == nil {
+		t.Fatal("the connections opened later are not followed")
+	}
+	if got := m.activeConnections[open.remote]; got != open {
+		t.Fatalf("stored = %v, want the connection open before the handler", got)
 	}
 }

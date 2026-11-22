@@ -17,6 +17,7 @@ import (
 	"github.com/idena-network/idena-go/core/mempool"
 	"github.com/idena-network/idena-go/core/state/snapshot"
 	"github.com/idena-network/idena-go/events"
+	"github.com/idena-network/idena-go/ipfs"
 	"github.com/idena-network/idena-go/log"
 	"github.com/idena-network/idena-go/pengings"
 	models "github.com/idena-network/idena-go/protobuf"
@@ -26,6 +27,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
 	"github.com/pkg/errors"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -127,15 +129,14 @@ func (h *IdenaGossipHandler) Start() {
 
 	setHandler := func() {
 		host := h.host
+		// The manager first: with the protocol advertised from the start, a stream can come as soon as the handler is
+		// set, and it must count on the manager that stays.
+		h.connManager = NewConnManager(host, h.cfg)
+		watchConnections(host, h.connManager)
 		reconnectTargets, closed, failed := registerIdenaStreamHandler(host, h.acceptStream)
 		if closed > 0 || failed > 0 {
 			h.log.Info("Refreshed Idena protocol advertisement", "closedPeers", closed, "failedPeers", failed)
 		}
-		h.connManager = NewConnManager(host, h.cfg)
-		notifiee := &notifiee{
-			connManager: h.connManager,
-		}
-		host.Network().Notify(notifiee)
 		h.exchange.register(host)
 		go func() {
 			connected, reconnectFailed := reconnectIdenaPeers(host, reconnectTargets)
@@ -182,13 +183,41 @@ func (h *IdenaGossipHandler) Start() {
 	go h.watchShardSubscription()
 }
 
-// registerIdenaStreamHandler reconnects peers established while the embedded
-// IPFS node was starting. Legacy peers otherwise retain an Identify snapshot
-// that does not advertise the handler registered later during node startup.
+// idenaMatcher accepts the Idena protocol versions this node speaks.
+var idenaMatcher = func() func(core.ProtocolID) bool {
+	matcher, err := multistreamSemverMatcher(IdenaProtocol)
+	if err != nil {
+		panic(fmt.Sprintf("Idena protocol %s has no semver version: %v", IdenaProtocol, err))
+	}
+	return matcher
+}()
+
+func init() {
+	ipfs.AdvertiseFromStart(IdenaProtocol, idenaMatcher)
+}
+
+// watchConnections makes cm follow the host's connections: the ones opened from now on, and the ones already open
+// (with the protocol advertised from the start, none is closed and opened again at registration).
+func watchConnections(host core.Host, cm *ConnManager) {
+	host.Network().Notify(&notifiee{connManager: cm})
+	for _, conn := range host.Network().Conns() {
+		if !cm.bannedPeers.Contains(conn.RemotePeer()) {
+			cm.storeConnection(conn)
+		}
+	}
+}
+
+// registerIdenaStreamHandler sets the Idena stream handler. The IPFS node's host advertises the protocol from its
+// creation (ipfs.AdvertiseFromStart), so every peer saw it when it connected. On a host that did not, it reconnects
+// the peers established while the embedded IPFS node was starting: legacy peers otherwise retain an Identify
+// snapshot that does not advertise the handler registered later during node startup.
 func registerIdenaStreamHandler(host core.Host, handler network.StreamHandler) (reconnectTargets []peer.AddrInfo, closed, failed int) {
+	advertised := slices.Contains(host.Mux().Protocols(), IdenaProtocol)
 	preexistingPeers := append([]peer.ID(nil), host.Network().Peers()...)
-	matcher, _ := multistreamSemverMatcher(IdenaProtocol)
-	host.SetStreamHandlerMatch(IdenaProtocol, matcher, handler)
+	host.SetStreamHandlerMatch(IdenaProtocol, idenaMatcher, handler)
+	if advertised {
+		return nil, 0, 0
+	}
 
 	for _, id := range preexistingPeers {
 		peerInfo := host.Peerstore().PeerInfo(id)
