@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"math/big"
 	"testing"
 
@@ -168,4 +169,34 @@ func TestContractCallsSuccess(t *testing.T) {
 	calls, err = api.ContractCalls(ContractCallsArgs{Contract: contract, Heights: []uint64{5}})
 	require.NoError(t, err)
 	require.Empty(t, calls)
+
+	// Asked for, each call carries its receipt's events, a callback's included (another contract's keeps its
+	// address, one without an address is the receipt's contract's); a call whose callback refused the action
+	// is accepted without the action's event.
+	callee := common.HexToAddress("0x8A44bA305c09375F6a1f553920e49daE4875A5E5")
+	ban := contractCallsTestTx(t, 6, types.CallContractTx, &contract, nil, contractCallPayload(t, "ban", []byte(`{}`)))
+	refusedInCallback := contractCallsTestTx(t, 7, types.CallContractTx, &contract, nil, contractCallPayload(t, "ban", []byte(`{}`)))
+	banReceipt := receipt(ban, true)
+	banReceipt.Events = []*types.TxEvent{
+		{EventName: "ban", Data: [][]byte{{0x01, 0x02}, {}, []byte("spam")}},
+		{Contract: callee, EventName: "seen", Data: [][]byte{{0x03}}},
+	}
+	chain.StoreBlock(block(6, ban, refusedInCallback, post),
+		types.TxReceipts{banReceipt, receipt(refusedInCallback, true), receipt(post, true)})
+	calls, err = api.ContractCalls(ContractCallsArgs{Contract: contract, Heights: []uint64{6}, Events: true})
+	require.NoError(t, err)
+	require.Len(t, calls, 3)
+	require.Equal(t, []Event{
+		{Contract: contract, Event: "ban", Args: []hexutil.Bytes{{0x01, 0x02}, {}, []byte("spam")}},
+		{Contract: callee, Event: "seen", Args: []hexutil.Bytes{{0x03}}},
+	}, calls[0].Events)
+	require.True(t, calls[1].Success)
+	require.Empty(t, calls[1].Events, "accepted, without the event of the action its callback refused")
+	require.Empty(t, calls[2].Events)
+	calls, err = api.ContractCalls(ContractCallsArgs{Contract: contract, Heights: []uint64{6}})
+	require.NoError(t, err)
+	require.Nil(t, calls[0].Events, "events only when asked")
+	encoded, err := json.Marshal(calls[0])
+	require.NoError(t, err)
+	require.NotContains(t, string(encoded), `"events"`, "the answer without events is the one before")
 }

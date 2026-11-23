@@ -202,12 +202,15 @@ const contractCallsReaders = 8
 type ContractCallsArgs struct {
 	Contract common.Address `json:"contract"`
 	Heights  []uint64       `json:"heights"`
+	// Events asks for each call's events too, as its receipt holds them.
+	Events bool `json:"events"`
 }
 
 // ContractCall is a call of a contract as a block holds it: the transaction at Index in the block at Height,
 // its sender and the sender's public key (both recovered from the signature: a key to encrypt for, also for an
-// address that is no identity), the coins sent with it, the method and its arguments, and whether the contract
-// accepted it (its receipt's success).
+// address that is no identity), the coins sent with it, the method and its arguments, whether the contract
+// accepted it (its receipt's success) and, when asked, the events its receipt holds: those of the call and of the
+// callbacks it ran (an action a callback refused leaves an accepted call without its event).
 type ContractCall struct {
 	Height    uint64         `json:"height"`
 	Timestamp int64          `json:"timestamp"`
@@ -220,6 +223,7 @@ type ContractCall struct {
 	Method       string          `json:"method"`
 	Args         []hexutil.Bytes `json:"args"`
 	Success      bool            `json:"success"`
+	Events       []Event         `json:"events,omitempty"`
 }
 
 // ContractCalls returns the calls of args.Contract in the blocks at args.Heights (at most
@@ -227,7 +231,7 @@ type ContractCall struct {
 // heights and, in a block, of its transactions. The bodies are read as bcn_blockAt reads them, so it also works
 // for blocks the node did not apply itself (fast sync): the senders are recovered from the signatures. A call
 // that the contract refused is listed too, as the block holds it, with Success false: the block's receipts,
-// read like its body, tell. A block whose body or receipts cannot be read is an error, so that no call is missed
+// read like its body, tell; with args.Events, each call also carries its receipt's events. A block whose body or receipts cannot be read is an error, so that no call is missed
 // or misread. Bodies and receipts fetched from peers take up to 30 seconds each, a block's two at once,
 // contractCallsReaders blocks at a time, and the RPC server ends a request after a minute: ask for a few blocks
 // per call.
@@ -278,7 +282,7 @@ func (api *BlockchainApi) ContractCalls(args ContractCallsArgs) ([]ContractCall,
 		if receiptErrs[i] != nil {
 			return nil, errors.Errorf("the receipts of block %d cannot be read", args.Heights[i])
 		}
-		if err := setCallsSuccess(blockCalls, receipts[i]); err != nil {
+		if err := setCallsReceipts(blockCalls, receipts[i], args.Events); err != nil {
 			return nil, errors.Wrapf(err, "block %d", args.Heights[i])
 		}
 		calls = append(calls, blockCalls...)
@@ -286,18 +290,22 @@ func (api *BlockchainApi) ContractCalls(args ContractCallsArgs) ([]ContractCall,
 	return calls, nil
 }
 
-// setCallsSuccess sets each call's Success from the receipt of its transaction; a call without one is an error.
-func setCallsSuccess(calls []ContractCall, receipts types.TxReceipts) error {
-	success := make(map[common.Hash]bool, len(receipts))
+// setCallsReceipts sets each call's Success, and its Events when withEvents, from the receipt of its
+// transaction; a call without one is an error.
+func setCallsReceipts(calls []ContractCall, receipts types.TxReceipts, withEvents bool) error {
+	byHash := make(map[common.Hash]*types.TxReceipt, len(receipts))
 	for _, receipt := range receipts {
-		success[receipt.TxHash] = receipt.Success
+		byHash[receipt.TxHash] = receipt
 	}
 	for i := range calls {
-		accepted, ok := success[calls[i].Hash]
+		receipt, ok := byHash[calls[i].Hash]
 		if !ok {
 			return errors.Errorf("no receipt for transaction %s", calls[i].Hash.Hex())
 		}
-		calls[i].Success = accepted
+		calls[i].Success = receipt.Success
+		if withEvents {
+			calls[i].Events = convertEvents(receipt)
+		}
 	}
 	return nil
 }
