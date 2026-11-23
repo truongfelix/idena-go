@@ -235,9 +235,9 @@ type ContractCall struct {
 // for blocks the node did not apply itself (fast sync): the senders are recovered from the signatures. A call
 // that the contract refused is listed too, as the block holds it, with Success false: the block's receipts,
 // read like its body, tell; with args.Events, each call also carries its receipt's events. A block whose body
-// or receipts cannot be read is an error, so that no call is missed or misread. Bodies and receipts fetched from peers take up to 30 seconds each, a block's two at once,
-// contractCallsReaders blocks at a time, and the RPC server ends a request after a minute: ask for a few blocks
-// per call.
+// or receipts cannot be read is an error, so that no call is missed or misread. Bodies and receipts fetched
+// from peers take up to 30 seconds each, a block's two at once, contractCallsReaders blocks at a time, and the
+// RPC server ends a request after a minute: ask for a few blocks per call.
 func (api *BlockchainApi) ContractCalls(args ContractCallsArgs) ([]ContractCall, error) {
 	if len(args.Heights) > MaxContractCallsBlocks {
 		return nil, errors.Errorf("more than %d blocks", MaxContractCallsBlocks)
