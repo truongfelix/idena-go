@@ -409,6 +409,13 @@ func convertReceipt(tx *types.Transaction, receipt *types.TxReceipt, feePerGas *
 		TxFee:        blockchain.ConvertToFloat(fee),
 		ActionResult: convertActionResultBytes(receipt.ActionResult),
 	}
+	result.Events = convertEvents(receipt)
+	return result
+}
+
+// convertEvents returns the receipt's events; an event without its own contract is the receipt's contract's.
+func convertEvents(receipt *types.TxReceipt) []Event {
+	var events []Event
 	for _, e := range receipt.Events {
 		event := Event{
 			Event: e.EventName,
@@ -421,9 +428,9 @@ func convertReceipt(tx *types.Transaction, receipt *types.TxReceipt, feePerGas *
 		} else {
 			event.Contract = receipt.ContractAddress
 		}
-		result.Events = append(result.Events, event)
+		events = append(events, event)
 	}
-	return result
+	return events
 }
 
 func convertEstimatedReceipt(tx *types.Transaction, receipt *types.TxReceipt, feePerGas *big.Int) *TxReceipt {
