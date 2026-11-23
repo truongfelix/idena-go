@@ -189,14 +189,17 @@ func TestContractCallsSuccess(t *testing.T) {
 	require.Equal(t, []Event{
 		{Contract: contract, Event: "ban", Args: []hexutil.Bytes{{0x01, 0x02}, {}, []byte("spam")}},
 		{Contract: callee, Event: "seen", Args: []hexutil.Bytes{{0x03}}},
-	}, calls[0].Events)
+	}, *calls[0].Events)
 	require.True(t, calls[1].Success)
-	require.Empty(t, calls[1].Events, "accepted, without the event of the action its callback refused")
-	require.Empty(t, calls[2].Events)
+	require.Equal(t, []Event{}, *calls[1].Events, "accepted, without the event of the action its callback refused")
+	encoded, err := json.Marshal(calls[2])
+	require.NoError(t, err)
+	require.Contains(t, string(encoded), `"events":[]`,
+		"asked for, a call without events has an empty list: an answer without one is an older node's")
 	calls, err = api.ContractCalls(ContractCallsArgs{Contract: contract, Heights: []uint64{6}})
 	require.NoError(t, err)
 	require.Nil(t, calls[0].Events, "events only when asked")
-	encoded, err := json.Marshal(calls[0])
+	encoded, err = json.Marshal(calls[0])
 	require.NoError(t, err)
 	require.NotContains(t, string(encoded), `"events"`, "the answer without events is the one before")
 }

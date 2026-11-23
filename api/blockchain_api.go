@@ -210,7 +210,8 @@ type ContractCallsArgs struct {
 // its sender and the sender's public key (both recovered from the signature: a key to encrypt for, also for an
 // address that is no identity), the coins sent with it, the method and its arguments, whether the contract
 // accepted it (its receipt's success) and, when asked, the events its receipt holds: those of the call and of the
-// callbacks it ran (an action a callback refused leaves an accepted call without its event).
+// callbacks it ran (an action a callback refused leaves an accepted call without its event). Only the
+// transactions sent to the contract are its calls: a call of it made by another contract is not listed.
 type ContractCall struct {
 	Height    uint64         `json:"height"`
 	Timestamp int64          `json:"timestamp"`
@@ -223,7 +224,9 @@ type ContractCall struct {
 	Method       string          `json:"method"`
 	Args         []hexutil.Bytes `json:"args"`
 	Success      bool            `json:"success"`
-	Events       []Event         `json:"events,omitempty"`
+	// Events is set only when asked for, then always a list (empty for a call without events): an answer
+	// without it comes from a node that does not return events.
+	Events *[]Event `json:"events,omitempty"`
 }
 
 // ContractCalls returns the calls of args.Contract in the blocks at args.Heights (at most
@@ -231,8 +234,8 @@ type ContractCall struct {
 // heights and, in a block, of its transactions. The bodies are read as bcn_blockAt reads them, so it also works
 // for blocks the node did not apply itself (fast sync): the senders are recovered from the signatures. A call
 // that the contract refused is listed too, as the block holds it, with Success false: the block's receipts,
-// read like its body, tell; with args.Events, each call also carries its receipt's events. A block whose body or receipts cannot be read is an error, so that no call is missed
-// or misread. Bodies and receipts fetched from peers take up to 30 seconds each, a block's two at once,
+// read like its body, tell; with args.Events, each call also carries its receipt's events. A block whose body
+// or receipts cannot be read is an error, so that no call is missed or misread. Bodies and receipts fetched from peers take up to 30 seconds each, a block's two at once,
 // contractCallsReaders blocks at a time, and the RPC server ends a request after a minute: ask for a few blocks
 // per call.
 func (api *BlockchainApi) ContractCalls(args ContractCallsArgs) ([]ContractCall, error) {
@@ -304,7 +307,11 @@ func setCallsReceipts(calls []ContractCall, receipts types.TxReceipts, withEvent
 		}
 		calls[i].Success = receipt.Success
 		if withEvents {
-			calls[i].Events = convertEvents(receipt)
+			events := convertEvents(receipt)
+			if events == nil {
+				events = []Event{}
+			}
+			calls[i].Events = &events
 		}
 	}
 	return nil
