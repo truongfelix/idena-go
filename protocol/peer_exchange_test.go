@@ -445,7 +445,7 @@ func TestPeerExchangeRoundSkipsAnIncomingPeerThatIsNotDirect(t *testing.T) {
 	require.Zero(t, candidateCount(node))
 }
 
-func TestPeerExchangeAsksOneDirectPeerThatConnectedInOnTopOfTheOutgoingOnes(t *testing.T) {
+func TestPeerExchangeAsksTheDirectPeersThatConnectedInOnTopOfTheOutgoingOnes(t *testing.T) {
 	directA, directB := newExchangeHost(t).ID(), newExchangeHost(t).ID()
 	node := newExchangeNode(t, newExchangeHost(t), config.P2P{DirectPeers: []string{
 		"/ip4/127.0.0.1/tcp/1/p2p/" + directA.String(), "/ip4/127.0.0.1/tcp/1/p2p/" + directB.String()}})
@@ -460,7 +460,25 @@ func TestPeerExchangeAsksOneDirectPeerThatConnectedInOnTopOfTheOutgoingOnes(t *t
 	addIdenaPeer(t, node, newExchangeHost(t).ID(), true)
 
 	targets := node.exchange.askTargets()
-	require.Len(t, targets, peerExchangeAskedPeers+1)
+	require.Len(t, targets, peerExchangeAskedPeers+2)
 	require.ElementsMatch(t, out, targets[:peerExchangeAskedPeers], "a direct peer took an outgoing peer's turn")
-	require.Contains(t, []peer.ID{directA, directB}, targets[peerExchangeAskedPeers])
+	require.ElementsMatch(t, []peer.ID{directA, directB}, targets[peerExchangeAskedPeers:])
+}
+
+func TestPeerExchangeRoundKeepsTheOtherAnswersWhenADirectPeerRefuses(t *testing.T) {
+	sharer := newExchangeNode(t, newExchangeHost(t), config.P2P{})
+	listTwoPeers(t, sharer)
+	// The refuser does not name the node back and connected out to it: it refuses. Were it answering, the round would
+	// take a node from it too.
+	refuser := newExchangeNode(t, newExchangeHost(t), config.P2P{})
+	listTwoPeers(t, refuser)
+	nodeHost := newExchangeHost(t)
+	node := joinedBy(t, nodeHost, refuser, true)
+	connectHosts(t, nodeHost, sharer.host)
+	addIdenaPeer(t, sharer, nodeHost.ID(), true)
+	addIdenaPeer(t, node, sharer.host.ID(), false)
+
+	require.ElementsMatch(t, []peer.ID{sharer.host.ID(), refuser.host.ID()}, node.exchange.askTargets())
+	node.exchange.round()
+	require.Equal(t, 1, candidateCount(node), "the refusal changed what the outgoing peer's answer gave")
 }
