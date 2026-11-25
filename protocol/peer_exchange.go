@@ -16,14 +16,15 @@ import (
 	manet "github.com/multiformats/go-multiaddr/net"
 )
 
-// Peer exchange: a node tells its incoming Idena peers and its direct peers which of its other incoming peers can be
-// reached through a relay ("these nodes connect to me, here they are if you want to connect to them"). A node with no
+// Peer exchange: a node tells its incoming Idena peers and its direct peers which of its other incoming and direct peers
+// can be reached through a relay ("these nodes connect to me, here they are if you want to connect to them"). A node with no
 // open port only ever connects out, so no other node behind a router ever meets it; once two such nodes have a relayed
 // connection, hole punching turns it into a direct one and either can then take the other as a peer.
 //
 // Only the peers that asked to be listed are shared, and an entry carries a peer id and its relay addresses, never
 // the peer's own IP address. A node opens this protocol only to the peers it connected out to (it is an incoming peer
-// there) and to its direct peers; a node answers only its incoming and direct peers.
+// there) and to its direct peers, whichever side connected; a node answers only its incoming and direct peers, so a
+// direct peer can be listed whichever side connected too.
 const PeerExchangeProtocol = core.ProtocolID("/idena/peer-exchange/1.0.0")
 
 const (
@@ -257,24 +258,28 @@ func (e *peerExchange) wantsListing() bool {
 	return e.isPrivate() && e.handler.connManager.CanAcceptStream()
 }
 
-// askTargets picks the peers to ask this round among the peers this node connected out to: it is an incoming peer
-// there. A direct peer that connected in asks this node instead (it is answered as a direct peer only where it is
-// named).
+// askTargets picks the peers to ask this round: a few of the peers this node connected out to (it is an incoming peer
+// there), and its direct peers that connected in (config.MaxDirectPeers at most). Two nodes that name each other as
+// direct peers both dial, and the one whose dial lost would otherwise never ask. A direct peer that does not name this
+// node back refuses (it answers only the peers that connected in to it): it is asked on top of the others, so it
+// costs one request a round and no outgoing peer's turn.
 func (e *peerExchange) askTargets() []peer.ID {
-	var all []peer.ID
+	var out, directIn []peer.ID
 	for _, p := range e.handler.peers.Peers() {
 		if !p.Inbound() {
-			all = append(all, p.id)
+			out = append(out, p.id)
+		} else if e.handler.connManager.IsDirectPeer(p.id) {
+			directIn = append(directIn, p.id)
 		}
 	}
 	var picked []peer.ID
-	for len(all) > 0 && len(picked) < peerExchangeAskedPeers {
-		i := secureIntn(len(all))
-		picked = append(picked, all[i])
-		all[i] = all[len(all)-1]
-		all = all[:len(all)-1]
+	for len(out) > 0 && len(picked) < peerExchangeAskedPeers {
+		i := secureIntn(len(out))
+		picked = append(picked, out[i])
+		out[i] = out[len(out)-1]
+		out = out[:len(out)-1]
 	}
-	return picked
+	return append(picked, directIn...)
 }
 
 // round asks a few peers for their listed peers and dials the new ones through their relays.
