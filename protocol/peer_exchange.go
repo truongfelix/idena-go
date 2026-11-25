@@ -42,12 +42,9 @@ const (
 	// peerExchangeListingTTL is how long a peer stays listed after it last asked: it asks again on its rounds while it
 	// still has free incoming slots and no open port.
 	peerExchangeListingTTL = 15 * time.Minute
-	// peerExchangeRefusedWait is how long a direct peer that connected in and refused a request is not asked again:
-	// it does not name this node as a direct peer, so it answers only the peers that connected in to it.
-	peerExchangeRefusedWait = time.Hour
-	peerExchangeTimeout     = 30 * time.Second
-	peerExchangeTag         = "idena-peer-exchange"
-	peerExchangeTagWeight   = 20
+	peerExchangeTimeout    = 30 * time.Second
+	peerExchangeTag        = "idena-peer-exchange"
+	peerExchangeTagWeight  = 20
 )
 
 type peerExchangeRequest struct {
@@ -72,8 +69,6 @@ type peerExchange struct {
 	// listed holds when each peer last asked to be listed: a listing lasts peerExchangeListingTTL.
 	listed       map[peer.ID]time.Time
 	lastRequests map[peer.ID]time.Time
-	// refused holds when each direct peer that connected in last failed a request.
-	refused map[peer.ID]time.Time
 
 	reachability sync.Mutex
 	private      bool
@@ -85,7 +80,6 @@ func newPeerExchange(handler *IdenaGossipHandler) *peerExchange {
 		handler:      handler,
 		listed:       make(map[peer.ID]time.Time),
 		lastRequests: make(map[peer.ID]time.Time),
-		refused:      make(map[peer.ID]time.Time),
 	}
 }
 
@@ -136,7 +130,6 @@ func (e *peerExchange) forget(id peer.ID) {
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
 	delete(e.listed, id)
-	delete(e.refused, id)
 	// lastRequests stays: a peer that reconnects waits out the interval too. serve ages it out.
 }
 
@@ -264,39 +257,29 @@ func (e *peerExchange) wantsListing() bool {
 	return e.isPrivate() && e.handler.connManager.CanAcceptStream()
 }
 
-// askTargets picks the peers to ask this round among the peers this node connected out to (it is an incoming peer
-// there) and its direct peers that connected in: when two nodes name each other as direct peers both dial, and the
-// one whose dial lost would otherwise never ask. A direct peer that connected in answers only where it names this
-// node too: after a failed request it waits peerExchangeRefusedWait.
+// askTargets picks the peers to ask this round: a few of the peers this node connected out to (it is an incoming peer
+// there), and one of its direct peers that connected in. Two nodes that name each other as direct peers both dial,
+// and the one whose dial lost would otherwise never ask. A direct peer that does not name this node back refuses
+// (it answers only the peers that connected in to it): it is asked on top of the others, so it costs one request a
+// round and no outgoing peer's turn.
 func (e *peerExchange) askTargets() []peer.ID {
-	now := time.Now()
-	e.mutex.Lock()
-	for id, at := range e.refused {
-		if now.Sub(at) >= peerExchangeRefusedWait {
-			delete(e.refused, id)
-		}
-	}
-	var all []peer.ID
+	var out, directIn []peer.ID
 	for _, p := range e.handler.peers.Peers() {
 		if !p.Inbound() {
-			all = append(all, p.id)
-			continue
+			out = append(out, p.id)
+		} else if e.handler.connManager.IsDirectPeer(p.id) {
+			directIn = append(directIn, p.id)
 		}
-		if !e.handler.connManager.IsDirectPeer(p.id) {
-			continue
-		}
-		if _, ok := e.refused[p.id]; ok {
-			continue
-		}
-		all = append(all, p.id)
 	}
-	e.mutex.Unlock()
 	var picked []peer.ID
-	for len(all) > 0 && len(picked) < peerExchangeAskedPeers {
-		i := secureIntn(len(all))
-		picked = append(picked, all[i])
-		all[i] = all[len(all)-1]
-		all = all[:len(all)-1]
+	for len(out) > 0 && len(picked) < peerExchangeAskedPeers {
+		i := secureIntn(len(out))
+		picked = append(picked, out[i])
+		out[i] = out[len(out)-1]
+		out = out[:len(out)-1]
+	}
+	if len(directIn) > 0 {
+		picked = append(picked, directIn[secureIntn(len(directIn))])
 	}
 	return picked
 }
@@ -312,11 +295,6 @@ func (e *peerExchange) round() {
 	for _, target := range targets {
 		infos, err := e.ask(target, listMe)
 		if err != nil {
-			if p := e.handler.peers.Peer(target); p != nil && p.Inbound() {
-				e.mutex.Lock()
-				e.refused[target] = time.Now()
-				e.mutex.Unlock()
-			}
 			e.handler.log.Debug("peer exchange request failed", "peer", target.String(), "err", err)
 			continue
 		}
