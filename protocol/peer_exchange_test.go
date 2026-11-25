@@ -444,3 +444,24 @@ func TestPeerExchangeRoundSkipsAnIncomingPeerThatIsNotDirect(t *testing.T) {
 	node.exchange.round()
 	require.Zero(t, candidateCount(node))
 }
+
+func TestPeerExchangeRoundStopsAskingADirectPeerThatDoesNotNameThisNode(t *testing.T) {
+	// Only the node names the sharer as a direct peer: the sharer connected out to it and refuses its requests.
+	sharer := newExchangeNode(t, newExchangeHost(t), config.P2P{})
+	listTwoPeers(t, sharer)
+	node := joinedBy(t, newExchangeHost(t), sharer, true)
+
+	require.Equal(t, []peer.ID{sharer.host.ID()}, node.exchange.askTargets())
+	node.exchange.round()
+	require.Zero(t, candidateCount(node))
+	require.Empty(t, node.exchange.askTargets(), "a direct peer that refused is asked again at once")
+
+	node.exchange.mutex.Lock()
+	node.exchange.refused[sharer.host.ID()] = time.Now().Add(-peerExchangeRefusedWait)
+	node.exchange.mutex.Unlock()
+	require.Equal(t, []peer.ID{sharer.host.ID()}, node.exchange.askTargets(), "the wait never ends")
+
+	node.exchange.round()
+	node.exchange.forget(sharer.host.ID())
+	require.Equal(t, []peer.ID{sharer.host.ID()}, node.exchange.askTargets(), "a reconnected direct peer still waits")
+}
