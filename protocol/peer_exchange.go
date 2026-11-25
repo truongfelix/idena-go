@@ -257,13 +257,13 @@ func (e *peerExchange) wantsListing() bool {
 	return e.isPrivate() && e.handler.connManager.CanAcceptStream()
 }
 
-// askTargets picks the peers to ask this round among the peers this node connected out to: it is an incoming peer
-// there. A direct peer that connected in asks this node instead (it is answered as a direct peer only where it is
-// named).
+// askTargets picks the peers to ask this round among the peers this node connected out to (it is an incoming peer
+// there) and its direct peers, whichever side connected: two direct peers both dial, and the one that connected in
+// would otherwise never ask (it is answered as a direct peer where it is named).
 func (e *peerExchange) askTargets() []peer.ID {
 	var all []peer.ID
 	for _, p := range e.handler.peers.Peers() {
-		if !p.Inbound() {
+		if !p.Inbound() || e.handler.connManager.IsDirectPeer(p.id) {
 			all = append(all, p.id)
 		}
 	}
